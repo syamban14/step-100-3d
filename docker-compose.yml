@@ -1,0 +1,10 @@
+services:
+  ular-tangga-3d:
+    image: ghcr.io/syamban14/ular-tangga-3d:latest
+    container_name: ular-tangga-3d-app
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001

@@ -1,0 +1,105 @@
+name: Build and Deploy to VPS via GHCR
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to VPS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+
+    steps:
+      - name: Check if VPS secrets are configured
+        id: check_secrets
+        run: |
+          if [ -z "$VPS_HOST" ]; then
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Secret VPS_HOST belum diatur di GitHub Secrets. Melewati tahap deploy ke VPS."
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+            echo "✅ Secret VPS_HOST ditemukan. Melanjutkan deploy ke VPS..."
+          fi
+
+      - name: Checkout repository
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Transfer docker-compose.yml to VPS
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: "docker-compose.yml"
+          target: "~/ular-tangga-3d"
+
+      - name: Pull new GHCR image & run container on VPS
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            mkdir -p ~/ular-tangga-3d
+            cd ~/ular-tangga-3d
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f

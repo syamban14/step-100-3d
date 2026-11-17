@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Ular Tangga 3D — Tropical Adventure</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>" />
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/build/three.module.js",
+        "three/addons/": "./vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Viewport 3D Fullscreen -->
+  <div id="canvas-container"></div>
+  <div id="pawn-overlays"></div>
+
+  <!-- Banner Notifikasi Event di Tengah Atas -->
+  <div id="event-banner" class="event-banner hidden"></div>
+
+  <!-- SCREEN 1: MENU UTAMA -->
+  <div id="screen-home" class="modal-backdrop">
+    <div class="glass-card home-card">
+      <div class="brand-header">
+        <span class="brand-pill">🏝️ TROPICAL DIORAMA 3D</span>
+        <h1>Ular Tangga 3D</h1>
+        <p class="subtitle">Papan terasering 3D, dadu memantul, tangga &amp; ular interaktif, plus Mystery Tiles.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="input-player-name">Nama Pemain Anda</label>
+        <input id="input-player-name" type="text" maxlength="18" placeholder="Masukkan nama panggilan..." value="Petualang" />
+      </div>
+
+      <div class="mode-grid">
+        <button id="btn-open-local" class="btn btn-primary btn-lg">
+          <span class="btn-icon">🎮</span>
+          <span>
+            <strong>Main Lokal / vs Bot AI</strong>
+            <small>1 perangkat (2–4 pemain &amp; Bot)</small>
+          </span>
+        </button>
+
+        <div class="online-box">
+          <div class="online-title">🌐 Multiplayer Online (Socket.io Room)</div>
+          <div class="online-actions">
+            <button id="btn-create-room" class="btn btn-accent">Buat Room</button>
+            <div class="join-row">
+              <input id="input-room-code" type="text" maxlength="6" placeholder="KODE ROOM" />
+              <button id="btn-join-room" class="btn btn-secondary">Gabung</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p id="home-error" class="error-text hidden"></p>
+
+      <div class="home-footer-controls">
+        <button id="btn-home-theme" class="btn btn-ghost btn-sm">🌙 Mode Malam</button>
+        <button id="btn-home-sound" class="btn btn-ghost btn-sm">🔊 Suara: Aktif</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN 2: SETUP LOKAL / VS BOT -->
+  <div id="screen-local-setup" class="modal-backdrop hidden">
+    <div class="glass-card setup-card">
+      <div class="card-top">
+        <h2>🎮 Pengaturan Game Lokal &amp; Bot</h2>
+        <button id="btn-local-back" class="btn btn-ghost btn-sm">← Kembali</button>
+      </div>
+
+      <div class="settings-bar">
+        <div class="setting-item">
+          <span>Jumlah Dadu:</span>
+          <div class="segmented" id="local-dice-seg">
+            <button type="button" data-val="1" class="active">1 Dadu</button>
+            <button type="button" data-val="2">2 Dadu</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <span>Mystery Tiles (?):</span>
+          <button type="button" id="btn-local-mystery" class="btn btn-toggle active">Aktif</button>
+        </div>
+      </div>
+
+      <div class="players-header">
+        <span>Slot Pemain (2–4)</span>
+        <button id="btn-local-add-slot" class="btn btn-secondary btn-sm">+ Tambah Slot</button>
+      </div>
+
+      <div id="local-slots-list" class="slots-list"></div>
+
+      <div class="card-actions">
+        <button id="btn-local-start" class="btn btn-primary btn-lg full-width">🚀 Mulai Petualangan!</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN 3: LOBBY MULTIPLAYER ONLINE -->
+  <div id="screen-lobby" class="modal-backdrop hidden">
+    <div class="glass-card lobby-card">
+      <div class="card-top">
+        <div>
+          <span class="badge-pill">LOBBY ONLINE</span>
+          <h2>Kode Room: <span id="lobby-room-code" class="code-highlight">------</span></h2>
+        </div>
+        <div class="top-btns">
+          <button id="btn-copy-code" class="btn btn-secondary btn-sm">📋 Salin</button>
+          <button id="btn-leave-room" class="btn btn-danger btn-sm">Keluar</button>
+        </div>
+      </div>
+
+      <div class="lobby-grid">
+        <div class="lobby-section">
+          <div class="section-head">
+            <h3>Daftar Pemain (<span id="lobby-player-count">0</span>/4)</h3>
+            <button id="btn-lobby-add-bot" class="btn btn-secondary btn-sm hidden">+ Tambah Bot</button>
+          </div>
+          <div id="lobby-players-list" class="lobby-players-list"></div>
+        </div>
+
+        <div class="lobby-section">
+          <h3>Pilih Karakter Anda</h3>
+          <div id="lobby-character-picker" class="character-grid"></div>
+
+          <h3 style="margin-top: 14px;">Aturan Room</h3>
+          <div class="settings-bar vertical">
+            <div class="setting-item">
+              <span>Jumlah Dadu:</span>
+              <div class="segmented" id="lobby-dice-seg">
+                <button type="button" data-val="1" class="active">1 Dadu</button>
+                <button type="button" data-val="2">2 Dadu</button>
+              </div>
+            </div>
+            <div class="setting-item">
+              <span>Mystery Tiles (?):</span>
+              <button type="button" id="btn-lobby-mystery" class="btn btn-toggle active">Aktif</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-actions">
+        <p id="lobby-wait-msg" class="hint-text">Menunggu host memulai permainan (minimal 2 pemain)...</p>
+        <button id="btn-lobby-start" class="btn btn-primary btn-lg full-width hidden">🚀 Mulai Permainan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN 4: HUD IN-GAME -->
+  <div id="screen-hud" class="hud-layer hidden">
+    <!-- Top HUD -->
+    <div class="hud-top">
+      <div class="hud-room-info glass-pill">
+        <span id="hud-mode-badge">LOKAL</span>
+        <span id="hud-rules-badge">1 Dadu • Mystery ON</span>
+      </div>
+
+      <div class="hud-controls">
+        <button id="btn-cam-overview" class="btn-hud" title="Tampilan Seluruh Papan">🗺️ Overview</button>
+        <button id="btn-cam-follow-now" class="btn-hud" title="Fokus Pion Aktif">🎯 Fokus Pion</button>
+        <button id="btn-cam-top" class="btn-hud" title="Tampilan Atas">⬇️ Atas</button>
+        <button id="btn-toggle-autofollow" class="btn-hud active" title="Kamera Otomatis Ikuti Pion">🎥 Auto-Follow: ON</button>
+        <button id="btn-hud-theme" class="btn-hud" title="Ganti Siang/Malam">☀️ Siang</button>
+        <button id="btn-hud-sound" class="btn-hud" title="Suara">🔊 Suara</button>
+        <button id="btn-hud-exit" class="btn-hud btn-hud-danger">Keluar</button>
+      </div>
+    </div>
+
+    <!-- Left Sidebar Players -->
+    <div id="hud-players" class="hud-players"></div>
+
+    <!-- Right Mini Log -->
+    <div class="hud-log-panel">
+      <div class="hud-log-header">📜 Log Kejadian</div>
+      <ul id="hud-log-list"></ul>
+    </div>
+
+    <!-- Bottom Turn & Emote Dock -->
+    <div class="hud-bottom">
+      <div class="emote-bar" id="hud-emote-bar"></div>
+
+      <div class="turn-dock glass-pill">
+        <div class="turn-status">
+          <div id="hud-turn-label" class="turn-title">Giliran Pemain</div>
+          <div id="hud-dice-result" class="dice-summary">Siap melempar dadu</div>
+        </div>
+        <button id="btn-roll-dice" class="btn-roll">
+          🎲 KOCOK DADU <span class="key-hint">[Spasi]</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL KEMENANGAN -->
+  <div id="modal-victory" class="modal-backdrop hidden">
+    <div class="glass-card victory-card">
+      <div class="victory-trophy">🏆</div>
+      <h2 id="victory-title">Pemenang!</h2>
+      <p id="victory-subtitle" class="subtitle">Berhasil mencapai puncak petak 100!</p>
+      <div id="victory-standings" class="standings-list"></div>
+      <div class="victory-actions">
+        <button id="btn-victory-rematch" class="btn btn-primary btn-lg">🔄 Main Lagi</button>
+        <button id="btn-victory-lobby" class="btn btn-secondary hidden">🏠 Ke Lobby</button>
+        <button id="btn-victory-home" class="btn btn-ghost">Menu Utama</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./socket.io/socket.io.js"></script>
+  <script src="./boardConfig.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
