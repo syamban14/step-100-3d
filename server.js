@@ -215,7 +215,8 @@ io.on('connection', (socket) => {
     const playerName = sanitizeName(payload.playerName, 'Pemain 1');
     const settings = {
       diceCount: payload.settings?.diceCount === 2 ? 2 : 1,
-      mysteryTiles: payload.settings?.mysteryTiles !== false
+      mysteryTiles: payload.settings?.mysteryTiles !== false,
+      boardStyle: payload.settings?.boardStyle === 'classic' ? 'classic' : 'mountain'
     };
 
     const room = {
@@ -311,6 +312,9 @@ io.on('connection', (socket) => {
     }
     if (typeof payload.mysteryTiles === 'boolean') {
       room.settings.mysteryTiles = payload.mysteryTiles;
+    }
+    if (payload.boardStyle === 'mountain' || payload.boardStyle === 'classic') {
+      room.settings.boardStyle = payload.boardStyle;
     }
     io.to(room.code).emit('room_updated', { room: serializeRoom(room) });
   });

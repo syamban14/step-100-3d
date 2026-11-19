@@ -29,10 +29,12 @@ const el = {
   btnOpenLocal: document.getElementById('btn-open-local'),
   btnCreateRoom: document.getElementById('btn-create-room'),
   btnJoinRoom: document.getElementById('btn-join-room'),
+  btnHomeBoardStyle: document.getElementById('btn-home-board-style'),
   btnHomeTheme: document.getElementById('btn-home-theme'),
   btnHomeSound: document.getElementById('btn-home-sound'),
 
   btnLocalBack: document.getElementById('btn-local-back'),
+  localStyleSeg: document.getElementById('local-style-seg'),
   localDiceSeg: document.getElementById('local-dice-seg'),
   btnLocalMystery: document.getElementById('btn-local-mystery'),
   btnLocalAddSlot: document.getElementById('btn-local-add-slot'),
@@ -46,6 +48,7 @@ const el = {
   btnLobbyAddBot: document.getElementById('btn-lobby-add-bot'),
   lobbyPlayersList: document.getElementById('lobby-players-list'),
   lobbyCharPicker: document.getElementById('lobby-character-picker'),
+  lobbyStyleSeg: document.getElementById('lobby-style-seg'),
   lobbyDiceSeg: document.getElementById('lobby-dice-seg'),
   btnLobbyMystery: document.getElementById('btn-lobby-mystery'),
   lobbyWaitMsg: document.getElementById('lobby-wait-msg'),
@@ -53,6 +56,7 @@ const el = {
 
   hudModeBadge: document.getElementById('hud-mode-badge'),
   hudRulesBadge: document.getElementById('hud-rules-badge'),
+  btnHudBoardStyle: document.getElementById('btn-hud-board-style'),
   btnCamOverview: document.getElementById('btn-cam-overview'),
   btnCamFollowNow: document.getElementById('btn-cam-follow-now'),
   btnCamTop: document.getElementById('btn-cam-top'),
@@ -81,12 +85,13 @@ const scene3d = new GameScene3D(el.canvasContainer, el.pawnOverlays);
 // State Aplikasi
 const state = {
   mode: null, // 'local' | 'online'
+  boardStyle: 'mountain', // 'mountain' | 'classic'
   theme: 'day',
   soundOn: true,
   autoFollow: true,
 
   // Setup Lokal
-  localSettings: { diceCount: 1, mysteryTiles: true },
+  localSettings: { diceCount: 1, mysteryTiles: true, boardStyle: 'mountain' },
   localSlots: [
     { name: 'Petualang 1', isBot: false, characterId: 'explorer' },
     { name: 'Bot Komodo', isBot: true, characterId: 'knight' }
@@ -162,6 +167,25 @@ function toggleAutoFollow() {
   el.btnToggleAutofollow.textContent = state.autoFollow ? '🎥 Auto-Follow: ON' : '🎥 Auto-Follow: OFF';
 }
 
+function setBoardStyleUI(style) {
+  state.boardStyle = style === 'classic' ? 'classic' : 'mountain';
+  state.localSettings.boardStyle = state.boardStyle;
+  scene3d.setBoardStyle(state.boardStyle);
+
+  const isMountain = state.boardStyle === 'mountain';
+  el.btnHomeBoardStyle.textContent = isMountain ? '🏔️ Papan: Gunung' : '🏝️ Papan: Klasik';
+  el.btnHudBoardStyle.textContent = isMountain ? '🏔️ Gunung' : '🏝️ Klasik';
+  el.localStyleSeg.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.val === state.boardStyle);
+  });
+}
+
+function toggleBoardStyle() {
+  setBoardStyleUI(state.boardStyle === 'mountain' ? 'classic' : 'mountain');
+}
+
+el.btnHomeBoardStyle.addEventListener('click', toggleBoardStyle);
+el.btnHudBoardStyle.addEventListener('click', toggleBoardStyle);
 el.btnHomeTheme.addEventListener('click', toggleTheme);
 el.btnHudTheme.addEventListener('click', toggleTheme);
 el.btnHomeSound.addEventListener('click', toggleSound);
@@ -272,6 +296,12 @@ el.btnOpenLocal.addEventListener('click', () => {
 });
 
 el.btnLocalBack.addEventListener('click', () => showScreen('home'));
+
+el.localStyleSeg.querySelectorAll('button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    setBoardStyleUI(btn.dataset.val);
+  });
+});
 
 el.localDiceSeg.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -388,7 +418,7 @@ el.btnCreateRoom.addEventListener('click', () => {
     return;
   }
   const playerName = el.inputPlayerName.value.trim() || 'Pemain 1';
-  socket.emit('create_room', { playerName }, (res) => {
+  socket.emit('create_room', { playerName, settings: { boardStyle: state.boardStyle } }, (res) => {
     if (!res || !res.ok) {
       showHomeError(res?.error || 'Gagal membuat room.');
       return;
@@ -444,6 +474,13 @@ el.btnLobbyAddBot.addEventListener('click', () => {
   socket.emit('add_bot');
 });
 
+el.lobbyStyleSeg.querySelectorAll('button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    if (!isHost()) return;
+    socket.emit('update_settings', { boardStyle: btn.dataset.val });
+  });
+});
+
 el.lobbyDiceSeg.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
     if (!isHost()) return;
@@ -483,6 +520,12 @@ function renderLobby() {
       : 'Menunggu host memulai permainan...';
 
   // Pengaturan Room
+  const roomStyle = room.settings.boardStyle === 'classic' ? 'classic' : 'mountain';
+  el.lobbyStyleSeg.querySelectorAll('button').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.val === roomStyle);
+    btn.disabled = !host;
+  });
+
   el.lobbyDiceSeg.querySelectorAll('button').forEach((btn) => {
     const val = Number(btn.dataset.val);
     btn.classList.toggle('active', room.settings.diceCount === val);
@@ -621,6 +664,7 @@ function enterMatchView() {
   el.modalVictory.classList.add('hidden');
   showScreen('hud');
 
+  setBoardStyleUI(state.room.settings.boardStyle || state.boardStyle);
   scene3d.setMysteryVisible(state.room.settings.mysteryTiles);
   const active = getActivePlayer();
   scene3d.syncPlayers(state.room.players, active ? active.id : null, true);
@@ -727,14 +771,25 @@ async function runTurnAnimation(playerId, result) {
       updateHudTileForPlayer(playerId, step.to);
     } else if (step.type === 'snake') {
       soundFX.playSnakeSlide();
-      showBanner(`🐍 Aduh! ${name} digigit ular #${step.from} → #${step.to}`);
-      addLog(`🐍 ${name} meluncur di ular #${step.from} → #${step.to}`);
+      if (state.boardStyle === 'mountain') {
+        const isStream = step.hazardKind === 'stream' || Boolean(BoardConfig.STREAMS[step.from]);
+        if (isStream) {
+          showBanner(`🌊 ${name} terbawa arus sungai jeram! #${step.from} → #${step.to}`);
+          addLog(`🌊 ${name} hanyut di sungai #${step.from} → #${step.to}`);
+        } else {
+          showBanner(`🪨 ${name} tergelincir longsoran tebing! #${step.from} → #${step.to}`);
+          addLog(`🪨 ${name} meluncur longsor #${step.from} → #${step.to}`);
+        }
+      } else {
+        showBanner(`🐍 Aduh! ${name} digigit ular #${step.from} → #${step.to}`);
+        addLog(`🐍 ${name} meluncur di ular #${step.from} → #${step.to}`);
+      }
       await scene3d.animateSnakeSlide(playerId, step.from, step.to);
       updateHudTileForPlayer(playerId, step.to);
     } else if (step.type === 'shield_saved') {
       soundFX.playShieldSave();
-      showBanner(`🛡️ Tameng Anti-Ular melindungi ${name} di petak #${step.tile}!`);
-      addLog(`🛡️ Tameng ${name} pecah menahan ular #${step.tile}`);
+      showBanner(`🛡️ Tameng melindungi ${name} di titik #${step.tile}!`);
+      addLog(`🛡️ Tameng ${name} pecah menahan rintangan #${step.tile}`);
       scene3d.updatePlayerShield(playerId, false);
       if (player) player.shield = false;
     }

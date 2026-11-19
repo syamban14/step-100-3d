@@ -61,6 +61,7 @@
       <p id="home-error" class="error-text hidden"></p>
 
       <div class="home-footer-controls">
+        <button id="btn-home-board-style" class="btn btn-ghost btn-sm">🏔️ Papan: Gunung</button>
         <button id="btn-home-theme" class="btn btn-ghost btn-sm">🌙 Mode Malam</button>
         <button id="btn-home-sound" class="btn btn-ghost btn-sm">🔊 Suara: Aktif</button>
       </div>
@@ -76,6 +77,13 @@
       </div>
 
       <div class="settings-bar">
+        <div class="setting-item">
+          <span>Gaya Dunia 3D:</span>
+          <div class="segmented" id="local-style-seg">
+            <button type="button" data-val="mountain" class="active">🏔️ Pendakian Gunung</button>
+            <button type="button" data-val="classic">🏝️ Papan Catur</button>
+          </div>
+        </div>
         <div class="setting-item">
           <span>Jumlah Dadu:</span>
           <div class="segmented" id="local-dice-seg">
@@ -132,6 +140,13 @@
           <h3 style="margin-top: 14px;">Aturan Room</h3>
           <div class="settings-bar vertical">
             <div class="setting-item">
+              <span>Dunia 3D:</span>
+              <div class="segmented" id="lobby-style-seg">
+                <button type="button" data-val="mountain" class="active">🏔️ Gunung</button>
+                <button type="button" data-val="classic">🏝️ Klasik</button>
+              </div>
+            </div>
+            <div class="setting-item">
               <span>Jumlah Dadu:</span>
               <div class="segmented" id="lobby-dice-seg">
                 <button type="button" data-val="1" class="active">1 Dadu</button>
@@ -163,6 +178,7 @@
       </div>
 
       <div class="hud-controls">
+        <button id="btn-hud-board-style" class="btn-hud" title="Ganti Papan Gunung / Papan Catur">🏔️ Gunung</button>
         <button id="btn-cam-overview" class="btn-hud" title="Tampilan Seluruh Papan">🗺️ Overview</button>
         <button id="btn-cam-follow-now" class="btn-hud" title="Fokus Pion Aktif">🎯 Fokus Pion</button>
         <button id="btn-cam-top" class="btn-hud" title="Tampilan Atas">⬇️ Atas</button>

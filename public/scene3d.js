@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const BoardConfig = window.BoardConfig;
 
@@ -30,6 +31,7 @@ export class GameScene3D {
     this.overlayLayer = overlayLayer;
 
     this.theme = 'day';
+    this.boardStyle = 'mountain';
     this.autoFollow = true;
     this.userDragging = false;
     this.cameraPresetLockUntil = 0;
@@ -41,30 +43,41 @@ export class GameScene3D {
     this.emoteTimeouts = new Map();
 
     this.mysteryMeshes = [];
+    this.mountainMysteryMeshes = [];
     this.snakeCurves = new Map();
     this.ladderPaths = new Map();
+    this.mountainLadderCurves = new Map();
+    this.mountainHazardCurves = new Map();
     this.torchLights = [];
     this.torchFlames = [];
+    this.mountainLights = [];
     this.diceMeshes = [];
     this.confettiParticles = [];
 
     this.activeFollowObj = null;
-    this.desiredTarget = new THREE.Vector3(0, 2.0, 0);
+    this.desiredTarget = new THREE.Vector3(0, 4.4, 0.5);
     this.desiredCameraPos = null;
 
     this.clock = new THREE.Clock();
 
     this.initRendererAndScene();
     this.initLights();
+
+    this.classicGroup = new THREE.Group();
+    this.mountainGroup = new THREE.Group();
+    this.scene.add(this.classicGroup);
+    this.scene.add(this.mountainGroup);
+
     this.buildEnvironment();
     this.buildBoard();
     this.buildLadders();
     this.buildSnakes();
     this.buildMysteryCrystals();
+    this.buildMountainMode();
     this.buildDice();
 
+    this.setBoardStyle(this.boardStyle);
     this.setTheme('day');
-    this.setCameraPreset('overview');
 
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
@@ -98,7 +111,7 @@ export class GameScene3D {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.075;
     this.controls.minDistance = 9;
-    this.controls.maxDistance = 56;
+    this.controls.maxDistance = 64;
     this.controls.maxPolarAngle = Math.PI / 2.15;
     this.controls.minPolarAngle = 0.12;
     this.controls.target.set(0, 2.0, 0);
@@ -153,7 +166,7 @@ export class GameScene3D {
     this.oceanMesh = new THREE.Mesh(oceanGeo, this.oceanMat);
     this.oceanMesh.position.y = -1.45;
     this.oceanMesh.receiveShadow = true;
-    this.scene.add(this.oceanMesh);
+    this.classicGroup.add(this.oceanMesh);
 
     // Pulau pasir & rumput tropis di bawah papan
     const sandIsland = new THREE.Mesh(
@@ -162,7 +175,7 @@ export class GameScene3D {
     );
     sandIsland.position.y = -1.35;
     sandIsland.receiveShadow = true;
-    this.scene.add(sandIsland);
+    this.classicGroup.add(sandIsland);
 
     const grassBase = new THREE.Mesh(
       new THREE.BoxGeometry(25.8, 0.7, 25.8),
@@ -170,10 +183,10 @@ export class GameScene3D {
     );
     grassBase.position.y = -0.55;
     grassBase.receiveShadow = true;
-    this.scene.add(grassBase);
+    this.classicGroup.add(grassBase);
 
     // Dermaga kayu START di sebelah petak 1
-    const startPos = BoardConfig.tileToWorld(0);
+    const startPos = BoardConfig.tileToClassicWorld(0);
     const dockGroup = new THREE.Group();
     const dockDeck = new THREE.Mesh(
       new THREE.BoxGeometry(3.4, 0.3, 3.4),
@@ -198,7 +211,7 @@ export class GameScene3D {
       post.castShadow = true;
       dockGroup.add(post);
     });
-    this.scene.add(dockGroup);
+    this.classicGroup.add(dockGroup);
 
     // Pohon Palem Tropis di sudut pulau
     const palmPositions = [
@@ -214,7 +227,7 @@ export class GameScene3D {
     palmPositions.forEach(([x, y, z, s], idx) => {
       const palm = this.createPalmTree(s, idx * 0.8);
       palm.position.set(x, y, z);
-      this.scene.add(palm);
+      this.classicGroup.add(palm);
     });
 
     // Batu karang hiasan di tepi pantai
@@ -232,7 +245,7 @@ export class GameScene3D {
       rock.scale.set(1.2, 0.75, 1.0);
       rock.castShadow = true;
       rock.receiveShadow = true;
-      this.scene.add(rock);
+      this.classicGroup.add(rock);
     });
 
     // Obor pulau untuk mode Malam
@@ -245,7 +258,7 @@ export class GameScene3D {
     ];
     torchSpots.forEach(([x, y, z]) => {
       const torch = this.createTorch(x, y, z);
-      this.scene.add(torch);
+      this.classicGroup.add(torch);
     });
 
     // Bintang untuk tema malam
@@ -414,7 +427,7 @@ export class GameScene3D {
 
     for (let tile = 1; tile <= 100; tile++) {
       const { row } = BoardConfig.tileToGrid(tile);
-      const pos = BoardConfig.tileToWorld(tile);
+      const pos = BoardConfig.tileToClassicWorld(tile);
 
       // Kolom penyangga terasering sampai dasar pulau
       const pillarHeight = pos.y + 0.85;
@@ -424,7 +437,7 @@ export class GameScene3D {
       pillar.position.set(pos.x, pos.y - pillarHeight / 2 - 0.08, pos.z);
       pillar.receiveShadow = true;
       pillar.castShadow = true;
-      this.scene.add(pillar);
+      this.classicGroup.add(pillar);
 
       // Pelat permukaan bernomor di puncak blok
       let specialType = null;
@@ -443,11 +456,11 @@ export class GameScene3D {
       cap.position.set(pos.x, pos.y - 0.08, pos.z);
       cap.receiveShadow = true;
       cap.castShadow = true;
-      this.scene.add(cap);
+      this.classicGroup.add(cap);
     }
 
     // Kuil Mahkota di petak 100
-    const p100 = BoardConfig.tileToWorld(100);
+    const p100 = BoardConfig.tileToClassicWorld(100);
     const crownGroup = new THREE.Group();
     crownGroup.position.set(p100.x, p100.y, p100.z);
 
@@ -473,7 +486,7 @@ export class GameScene3D {
     crown.castShadow = true;
     crownGroup.add(crown);
     this.crownMesh = crown;
-    this.scene.add(crownGroup);
+    this.classicGroup.add(crownGroup);
   }
 
   buildLadders() {
@@ -482,8 +495,8 @@ export class GameScene3D {
 
     Object.entries(BoardConfig.LADDERS).forEach(([fromStr, toTile]) => {
       const fromTile = Number(fromStr);
-      const a = BoardConfig.tileToWorld(fromTile);
-      const b = BoardConfig.tileToWorld(toTile);
+      const a = BoardConfig.tileToClassicWorld(fromTile);
+      const b = BoardConfig.tileToClassicWorld(toTile);
 
       const start = new THREE.Vector3(a.x, a.y + 0.14, a.z);
       const end = new THREE.Vector3(b.x, b.y + 0.14, b.z);
@@ -524,7 +537,7 @@ export class GameScene3D {
         ladderGroup.add(rung);
       }
 
-      this.scene.add(ladderGroup);
+      this.classicGroup.add(ladderGroup);
     });
   }
 
@@ -561,8 +574,8 @@ export class GameScene3D {
 
     Object.entries(BoardConfig.SNAKES).forEach(([fromStr, toTile], idx) => {
       const fromTile = Number(fromStr);
-      const a = BoardConfig.tileToWorld(fromTile);
-      const b = BoardConfig.tileToWorld(toTile);
+      const a = BoardConfig.tileToClassicWorld(fromTile);
+      const b = BoardConfig.tileToClassicWorld(toTile);
 
       const start = new THREE.Vector3(a.x, a.y + 0.35, a.z);
       const end = new THREE.Vector3(b.x, b.y + 0.25, b.z);
@@ -600,7 +613,7 @@ export class GameScene3D {
       const snakeMesh = new THREE.Mesh(tubeGeo, tubeMat);
       snakeMesh.castShadow = true;
       snakeMesh.receiveShadow = true;
-      this.scene.add(snakeMesh);
+      this.classicGroup.add(snakeMesh);
 
       // Kepala Ular di titik start
       const headGroup = new THREE.Group();
@@ -635,7 +648,7 @@ export class GameScene3D {
       tongue.position.set(0, -0.05, 0.65);
       headGroup.add(tongue);
 
-      this.scene.add(headGroup);
+      this.classicGroup.add(headGroup);
     });
   }
 
@@ -650,7 +663,7 @@ export class GameScene3D {
     const ringMat = new THREE.MeshBasicMaterial({ color: '#e9d5ff', transparent: true, opacity: 0.75 });
 
     BoardConfig.MYSTERY_TILES.forEach((tile, idx) => {
-      const pos = BoardConfig.tileToWorld(tile);
+      const pos = BoardConfig.tileToClassicWorld(tile);
       const group = new THREE.Group();
       group.position.set(pos.x, pos.y + 0.68, pos.z);
       group.userData = { baseY: pos.y + 0.68, phase: idx * 0.9 };
@@ -665,13 +678,228 @@ export class GameScene3D {
       group.add(halo);
 
       this.mysteryMeshes.push(group);
-      this.scene.add(group);
+      this.classicGroup.add(group);
     });
   }
 
   setMysteryVisible(visible) {
     this.mysteryMeshes.forEach((m) => {
       m.visible = visible;
+    });
+    this.mountainMysteryMeshes.forEach((m) => {
+      m.visible = visible;
+    });
+  }
+
+  createMountainBadgeTexture(tileNum) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 96;
+    canvas.height = 96;
+    const ctx = canvas.getContext('2d');
+
+    ctx.clearRect(0, 0, 96, 96);
+    let fill = 'rgba(15, 23, 42, 0.72)';
+    let stroke = '#e2e8f0';
+    let text = '#ffffff';
+
+    if (tileNum === 1) {
+      fill = '#15803d';
+      stroke = '#86efac';
+    } else if (tileNum === 100) {
+      fill = '#ca8a04';
+      stroke = '#fef08a';
+    } else if (BoardConfig.LADDERS[tileNum]) {
+      fill = '#065f46';
+      stroke = '#6ee7b7';
+    } else if (BoardConfig.STREAMS[tileNum]) {
+      fill = '#0369a1';
+      stroke = '#7dd3fc';
+    } else if (BoardConfig.LANDSLIDES[tileNum]) {
+      fill = '#9a3412';
+      stroke = '#fdba74';
+    } else if (BoardConfig.MYSTERY_TILES.includes(tileNum)) {
+      fill = '#6b21a8';
+      stroke = '#d8b4fe';
+    }
+
+    ctx.beginPath();
+    ctx.arc(48, 48, 43, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+
+    ctx.fillStyle = text;
+    ctx.font = 'bold 40px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(tileNum), 48, 50);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  prepareLoadedGltf(gltfScene) {
+    gltfScene.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        if (child.geometry?.attributes?.color && child.material) {
+          child.material.vertexColors = true;
+          child.material.needsUpdate = true;
+        }
+      }
+    });
+    return gltfScene;
+  }
+
+  buildMountainMode() {
+    // Alas lembah hijau luas di sekitar kaki gunung
+    this.valleyMat = new THREE.MeshStandardMaterial({
+      color: '#46883f',
+      roughness: 0.94,
+      flatShading: true
+    });
+    const valleyFloor = new THREE.Mesh(new THREE.CircleGeometry(110, 32), this.valleyMat);
+    valleyFloor.rotation.x = -Math.PI / 2;
+    valleyFloor.position.y = -0.35;
+    valleyFloor.receiveShadow = true;
+    this.mountainGroup.add(valleyFloor);
+
+    // Pelat batu pendaratan dadu di lembah depan tengah
+    const dicePad = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.35, 2.7, 0.34, 10),
+      new THREE.MeshStandardMaterial({ color: '#8f969c', roughness: 0.88, flatShading: true })
+    );
+    dicePad.position.set(0, 0.25, 14.8);
+    dicePad.receiveShadow = true;
+    dicePad.castShadow = true;
+    this.mountainGroup.add(dicePad);
+
+    // Plat nomor 1-100 di atas batu pijakan jalan setapak gunung
+    const discGeo = new THREE.CircleGeometry(0.28, 12);
+    for (let tile = 1; tile <= 100; tile++) {
+      const pos = BoardConfig.tileToMountainWorld(tile);
+      const tex = this.createMountainBadgeTexture(tile);
+      const discMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const disc = new THREE.Mesh(discGeo, discMat);
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.set(pos.x, pos.y + 0.02, pos.z);
+      this.mountainGroup.add(disc);
+    }
+
+    // Kurva panjat tangga & meluncur sungai/longsor yang presisi mengikuti lereng gunung
+    Object.entries(BoardConfig.LADDERS).forEach(([fromStr, toTile]) => {
+      const fromTile = Number(fromStr);
+      const p0 = BoardConfig.tileToMountainWorld(fromTile);
+      const p1 = BoardConfig.tileToMountainWorld(toTile);
+      const fromRow = Math.floor((fromTile - 1) / 10);
+      const toRow = Math.floor((toTile - 1) / 10);
+      const archOut = 0.35 + Math.abs(toRow - fromRow) * 0.28;
+
+      const pts = [];
+      for (let i = 0; i <= 6; i++) {
+        const t = i / 6;
+        const pt = new THREE.Vector3(
+          THREE.MathUtils.lerp(p0.x, p1.x, t),
+          THREE.MathUtils.lerp(p0.y, p1.y, t) + Math.sin(t * Math.PI) * 0.45,
+          THREE.MathUtils.lerp(p0.z, p1.z, t) + Math.sin(t * Math.PI) * archOut * 0.85
+        );
+        pts.push(pt);
+      }
+      this.mountainLadderCurves.set(fromTile, new THREE.CatmullRomCurve3(pts));
+    });
+
+    Object.entries(BoardConfig.SNAKES).forEach(([fromStr, toTile], idx) => {
+      const fromTile = Number(fromStr);
+      const p0 = BoardConfig.tileToMountainWorld(fromTile);
+      const p1 = BoardConfig.tileToMountainWorld(toTile);
+      const isStream = Boolean(BoardConfig.STREAMS[fromTile]);
+      const streamIdx = Object.keys(BoardConfig.STREAMS).map(Number).indexOf(fromTile);
+      const slideIdx = Object.keys(BoardConfig.LANDSLIDES).map(Number).indexOf(fromTile);
+      const fromRow = Math.floor((fromTile - 1) / 10);
+      const toRow = Math.floor((toTile - 1) / 10);
+      const rowSpan = Math.abs(fromRow - toRow);
+
+      // Hitung vektor tegak lurus di bidang horizontal (Blender XY -> Three XZ)
+      const dx = p1.x - p0.x;
+      const dz = p1.z - p0.z;
+      const perp = new THREE.Vector3(dz, 0, -dx);
+      if (perp.lengthSq() < 0.001) perp.set(1, 0, 0);
+      perp.normalize();
+
+      const pts = [];
+      for (let i = 0; i <= 8; i++) {
+        const t = i / 8;
+        const swirl = isStream
+          ? Math.sin(t * Math.PI * 2.2 + Math.max(0, streamIdx)) * 0.65 * Math.sin(t * Math.PI)
+          : Math.sin(t * Math.PI * 1.8 - Math.max(0, slideIdx)) * 0.55 * Math.sin(t * Math.PI);
+
+        const pt = new THREE.Vector3(
+          THREE.MathUtils.lerp(p0.x, p1.x, t) + perp.x * swirl,
+          THREE.MathUtils.lerp(p0.y, p1.y, t) + Math.sin(t * Math.PI) * 0.65 + 0.16,
+          THREE.MathUtils.lerp(p0.z, p1.z, t) + perp.z * swirl + Math.sin(t * Math.PI) * (0.35 + rowSpan * 0.25)
+        );
+        pts.push(pt);
+      }
+      this.mountainHazardCurves.set(fromTile, new THREE.CatmullRomCurve3(pts));
+    });
+
+    // Lampu Mode Malam untuk Api Unggun Basecamp & 8 Lentera Jalur
+    const campLight = new THREE.PointLight('#ff9f43', 0, 14, 1.4);
+    campLight.position.set(-11.7, 1.5, 14.3);
+    this.mountainGroup.add(campLight);
+    this.mountainLights.push(campLight);
+
+    [0, 10, 21, 40, 51, 70, 81, 91].forEach((lt) => {
+      const tp = BoardConfig.tileToMountainWorld(lt);
+      const outDir = tp.x >= 0 ? 0.95 : -0.95;
+      const lLight = new THREE.PointLight('#fbbf24', 0, 9.5, 1.6);
+      lLight.position.set(tp.x + outDir, tp.y + 1.0, tp.z + 0.42);
+      this.mountainGroup.add(lLight);
+      this.mountainLights.push(lLight);
+    });
+
+    // Muat aset GLB Blender (gunung + jalur + hutan + basecamp + puncak + peti mystery)
+    const loader = new GLTFLoader();
+    loader.load('./assets/models/mountain_trail.glb', (gltf) => {
+      this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
+    });
+    loader.load('./assets/models/mountain_scenery.glb', (gltf) => {
+      this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
+    });
+    loader.load('./assets/models/summit_set.glb', (gltf) => {
+      const root = this.prepareLoadedGltf(gltf.scene);
+      const crateTemplate = root.getObjectByName('MysterySupplyCrate');
+      const crystalTemplate = root.getObjectByName('MysteryCrystal');
+
+      BoardConfig.MYSTERY_TILES.forEach((tile, idx) => {
+        const pos = BoardConfig.tileToMountainWorld(tile);
+        const wrapper = new THREE.Group();
+        wrapper.position.set(pos.x, pos.y + 0.02, pos.z);
+
+        if (crateTemplate) {
+          const crate = crateTemplate.clone();
+          crate.position.set(0.56, -0.05, 0.2);
+          crate.scale.setScalar(0.65);
+          wrapper.add(crate);
+        }
+
+        const floatGroup = new THREE.Group();
+        floatGroup.position.set(0, 0.65, 0);
+        floatGroup.userData = { baseY: 0.65, phase: idx * 0.9 };
+        if (crystalTemplate) {
+          const cry = crystalTemplate.clone();
+          cry.position.set(0, -0.8, 0);
+          cry.scale.setScalar(1.05);
+          floatGroup.add(cry);
+        }
+        wrapper.add(floatGroup);
+        this.mountainMysteryMeshes.push(wrapper);
+        this.mountainGroup.add(wrapper);
+      });
     });
   }
 
@@ -759,8 +987,9 @@ export class GameScene3D {
 
   async throwDice(diceValues) {
     const count = diceValues.length;
-    const baseY = 4 * BoardConfig.ROW_HEIGHT + 0.575; // Mendarat di atas teras baris tengah (row 4)
-    const landingZ = 0.5 * BoardConfig.STEP_PITCH;
+    const isMountain = this.boardStyle === 'mountain';
+    const baseY = isMountain ? 0.42 + 0.575 : 4 * BoardConfig.ROW_HEIGHT + 0.575;
+    const landingZ = isMountain ? 14.8 : 0.5 * BoardConfig.STEP_PITCH;
 
     const anims = diceValues.map((val, idx) => {
       const die = this.diceMeshes[idx];
@@ -959,8 +1188,9 @@ export class GameScene3D {
 
   getSlotOffset(slotIndex, totalSameTile, isStartDock = false) {
     if (totalSameTile <= 1) return { x: 0, z: 0 };
-    const dx = isStartDock ? 0.85 : 0.45;
-    const dz = isStartDock ? 0.85 : 0.42;
+    const isMountain = this.boardStyle === 'mountain';
+    const dx = isStartDock ? (isMountain ? 0.65 : 0.85) : (isMountain ? 0.28 : 0.45);
+    const dz = isStartDock ? (isMountain ? 0.65 : 0.85) : (isMountain ? 0.22 : 0.42);
     const offsets = [
       { x: -dx, z: -dz },
       { x: dx, z: -dz },
@@ -971,7 +1201,7 @@ export class GameScene3D {
   }
 
   getPawnWorldPos(tile, playerId) {
-    const base = BoardConfig.tileToWorld(tile);
+    const base = BoardConfig.tileToWorld(tile, this.boardStyle);
     const sameTilePlayers = [];
     this.pawnMeta.forEach((meta, pid) => {
       if (meta.tile === tile) sameTilePlayers.push(pid);
@@ -1124,7 +1354,9 @@ export class GameScene3D {
     if (!mesh) return;
     this.setActiveFollow(playerId);
 
-    const ladder = this.ladderPaths.get(fromTile);
+    const isMountain = this.boardStyle === 'mountain';
+    const mountainCurve = isMountain ? this.mountainLadderCurves.get(fromTile) : null;
+    const ladder = !isMountain ? this.ladderPaths.get(fromTile) : null;
     const meta = this.pawnMeta.get(playerId);
     if (meta) meta.tile = toTile;
 
@@ -1143,12 +1375,18 @@ export class GameScene3D {
       const frame = (now) => {
         const t = Math.min(1, (now - t0) / dur);
         const eased = easeInOutQuad(t);
-        mesh.position.lerpVectors(startPos, endPos, eased);
+        if (mountainCurve) {
+          const p = mountainCurve.getPointAt(eased);
+          mesh.position.copy(p);
+        } else {
+          mesh.position.lerpVectors(startPos, endPos, eased);
+        }
         // Gerak kiri-kanan kecil seakan memanjat anak tangga
         mesh.rotation.z = Math.sin(t * Math.PI * 8) * 0.12;
         if (t < 1) requestAnimationFrame(frame);
         else {
           mesh.rotation.z = 0;
+          mesh.position.copy(endPos);
           resolve();
         }
       };
@@ -1162,7 +1400,10 @@ export class GameScene3D {
     if (!mesh) return;
     this.setActiveFollow(playerId);
 
-    const curve = this.snakeCurves.get(fromTile);
+    const curve =
+      this.boardStyle === 'mountain'
+        ? this.mountainHazardCurves.get(fromTile)
+        : this.snakeCurves.get(fromTile);
     const meta = this.pawnMeta.get(playerId);
     if (meta) meta.tile = toTile;
     const finalPos = this.getPawnWorldPos(toTile, playerId);
@@ -1214,7 +1455,7 @@ export class GameScene3D {
   }
 
   spawnWinConfetti(tile = 100) {
-    const origin = BoardConfig.tileToWorld(tile);
+    const origin = BoardConfig.tileToWorld(tile, this.boardStyle);
     const colors = ['#ff5e57', '#ffd32a', '#0be881', '#00d8d6', '#a55eea'];
     for (let i = 0; i < 65; i++) {
       const geo = new THREE.BoxGeometry(0.18, 0.18, 0.05);
@@ -1248,6 +1489,7 @@ export class GameScene3D {
       this.dirLight.intensity = 0.65;
       this.fillLight.intensity = 0.25;
       this.oceanMat.color.set('#072b4d');
+      if (this.valleyMat) this.valleyMat.color.set('#1a3324');
       this.starMat.opacity = 0.9;
     } else {
       this.scene.background = new THREE.Color('#74ccf4');
@@ -1259,6 +1501,7 @@ export class GameScene3D {
       this.dirLight.intensity = 1.55;
       this.fillLight.intensity = 0.45;
       this.oceanMat.color.set('#0e8dc7');
+      if (this.valleyMat) this.valleyMat.color.set('#46883f');
       this.starMat.opacity = 0;
     }
 
@@ -1268,6 +1511,21 @@ export class GameScene3D {
     this.torchLights.forEach((l) => {
       l.intensity = isNight ? 2.8 : 0;
     });
+    this.mountainLights.forEach((l, idx) => {
+      l.intensity = isNight ? (idx === 0 ? 4.2 : 3.0) : 0;
+    });
+  }
+
+  setBoardStyle(style) {
+    this.boardStyle = style === 'classic' ? 'classic' : 'mountain';
+    const isMountain = this.boardStyle === 'mountain';
+    this.classicGroup.visible = !isMountain;
+    this.mountainGroup.visible = isMountain;
+    this.diceMeshes.forEach((d) => {
+      d.visible = false;
+    });
+    this.repositionAllPawnsSmooth();
+    this.setCameraPreset('overview');
   }
 
   setAutoFollow(enabled) {
@@ -1276,17 +1534,30 @@ export class GameScene3D {
 
   setCameraPreset(preset, activePlayerId = null) {
     this.cameraPresetLockUntil = performance.now() + 1200;
+    const isMountain = this.boardStyle === 'mountain';
     if (preset === 'overview') {
-      this.desiredTarget.set(0, 2.1, 0);
-      this.desiredCameraPos = new THREE.Vector3(0, 22, 29);
+      if (isMountain) {
+        this.desiredTarget.set(0, 4.4, 0.5);
+        this.desiredCameraPos = new THREE.Vector3(0, 21.0, 36.5);
+      } else {
+        this.desiredTarget.set(0, 2.1, 0);
+        this.desiredCameraPos = new THREE.Vector3(0, 22, 29);
+      }
     } else if (preset === 'top') {
-      this.desiredTarget.set(0, 1.8, 0);
-      this.desiredCameraPos = new THREE.Vector3(0, 35, 5.5);
+      if (isMountain) {
+        this.desiredTarget.set(0, 4.0, 0.5);
+        this.desiredCameraPos = new THREE.Vector3(0, 38.5, 11.0);
+      } else {
+        this.desiredTarget.set(0, 1.8, 0);
+        this.desiredCameraPos = new THREE.Vector3(0, 35, 5.5);
+      }
     } else if (preset === 'follow') {
       const pawn = activePlayerId ? this.pawns.get(activePlayerId) : null;
-      const focus = pawn ? pawn.position.clone() : new THREE.Vector3(0, 2, 0);
-      this.desiredTarget.copy(focus).add(new THREE.Vector3(0, 0.8, 0));
-      this.desiredCameraPos = focus.clone().add(new THREE.Vector3(0, 8.5, 11.5));
+      const focus = pawn
+        ? pawn.position.clone()
+        : new THREE.Vector3(0, isMountain ? 4.2 : 2, 0);
+      this.desiredTarget.copy(focus).add(new THREE.Vector3(0, 0.85, 0));
+      this.desiredCameraPos = focus.clone().add(new THREE.Vector3(0, 7.8, 11.8));
     }
   }
 
@@ -1341,15 +1612,17 @@ export class GameScene3D {
     requestAnimationFrame(this.animate);
     const t = this.clock.getElapsedTime();
 
-    // Gelombang laut halus
-    const posAttr = this.oceanMesh.geometry.attributes.position;
-    for (let i = 0; i < posAttr.count; i++) {
-      const vx = posAttr.getX(i);
-      const vz = posAttr.getZ(i);
-      const wave = Math.sin(vx * 0.14 + t * 1.4) * 0.18 + Math.cos(vz * 0.12 + t * 1.1) * 0.16;
-      posAttr.setY(i, this.oceanBaseY[i] + wave);
+    // Gelombang laut halus (hanya saat mode klasik terlihat)
+    if (this.classicGroup.visible) {
+      const posAttr = this.oceanMesh.geometry.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vz = posAttr.getZ(i);
+        const wave = Math.sin(vx * 0.14 + t * 1.4) * 0.18 + Math.cos(vz * 0.12 + t * 1.1) * 0.16;
+        posAttr.setY(i, this.oceanBaseY[i] + wave);
+      }
+      posAttr.needsUpdate = true;
     }
-    posAttr.needsUpdate = true;
 
     // Animasi Kristal Mystery & Mahkota Puncak
     this.mysteryMeshes.forEach((m) => {
@@ -1357,16 +1630,25 @@ export class GameScene3D {
       m.rotation.y = t * 1.6 + m.userData.phase;
       m.position.y = m.userData.baseY + Math.sin(t * 2.8 + m.userData.phase) * 0.12;
     });
+    this.mountainMysteryMeshes.forEach((wrapper) => {
+      if (!wrapper.visible || wrapper.children.length < 2) return;
+      const floatGrp = wrapper.children[1];
+      floatGrp.rotation.y = t * 1.6 + floatGrp.userData.phase;
+      floatGrp.position.y = floatGrp.userData.baseY + Math.sin(t * 2.8 + floatGrp.userData.phase) * 0.10;
+    });
     if (this.crownMesh) {
       this.crownMesh.rotation.y = t * 1.2;
       this.crownMesh.position.y = 2.4 + Math.sin(t * 2.2) * 0.15;
     }
 
-    // Kedip cahaya obor saat malam
+    // Kedip cahaya obor / api unggun saat malam
     if (this.theme === 'night') {
       this.torchLights.forEach((light, i) => {
         light.intensity = 2.6 + Math.sin(t * 11 + i * 2) * 0.45;
       });
+      if (this.mountainLights.length > 0) {
+        this.mountainLights[0].intensity = 4.2 + Math.sin(t * 12) * 0.75;
+      }
     }
 
     // Update partikel confetti kemenangan

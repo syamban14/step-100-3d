@@ -3,3 +3,6 @@ npm-debug.log
 .git
 .github
 .DS_Store
+scripts
+public/assets/blend
+

@@ -3,4 +3,8 @@ node_modules/
 *.log
 .env
 _site/
+__pycache__/
+*.pyc
+*.blend1
+
 

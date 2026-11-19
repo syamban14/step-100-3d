@@ -19,15 +19,24 @@
   };
 
   // 8 Ular (kepala -> ekor), dipastikan tidak bertabrakan dengan tangga/mystery
-  const SNAKES = {
+  // Di mode Gunung terbagi menjadi 4 Sungai Jeram & 4 Longsoran Tebing
+  const STREAMS = {
     27: 5,
     40: 3,
+    66: 45,
+    89: 53
+  };
+
+  const LANDSLIDES = {
     43: 18,
     54: 31,
-    66: 45,
     76: 58,
-    89: 53,
     99: 41
+  };
+
+  const SNAKES = {
+    ...STREAMS,
+    ...LANDSLIDES
   };
 
   // 10 Petak Kejutan (Mystery Tiles) bebas bentrok
@@ -90,7 +99,7 @@
     return { tile: clamped, row, col };
   }
 
-  function tileToWorld(tile) {
+  function tileToClassicWorld(tile) {
     if (tile <= 0) {
       return {
         x: (-4.5 - 1.25) * STEP_PITCH,
@@ -104,6 +113,42 @@
       y: row * ROW_HEIGHT,
       z: (4.5 - row) * STEP_PITCH
     };
+  }
+
+  function tileToMountainWorld(tile) {
+    if (tile <= 0) {
+      return {
+        x: -11.8,
+        y: 0.49,
+        z: 12.8
+      };
+    }
+    const clamped = Math.max(1, Math.min(100, tile));
+    const row = Math.floor((clamped - 1) / 10);
+    const colInRow = (clamped - 1) % 10;
+    const col = row % 2 === 0 ? colInRow : 9 - colInRow;
+
+    const nx = (col - 4.5) / 4.5;
+    const halfW = 10.2 - row * 0.62;
+    const bx = nx * halfW;
+
+    const meanderY = 0.45 * Math.sin(nx * Math.PI * 1.5 + row * 1.1);
+    const yBase = -10.8 + row * 1.92;
+    const bulge = (1.0 - nx * nx) * (1.85 - row * 0.13);
+    const by = yBase - bulge + meanderY;
+
+    const rowProgress = colInRow / 9.0;
+    const bz = 0.65 + (row + rowProgress * 0.85) * 0.92;
+
+    return {
+      x: bx,
+      y: bz + 0.08,
+      z: -by
+    };
+  }
+
+  function tileToWorld(tile, boardStyle = 'classic') {
+    return boardStyle === 'mountain' ? tileToMountainWorld(tile) : tileToClassicWorld(tile);
   }
 
   function rollDiceValues(diceCount, rngFn) {
@@ -247,6 +292,7 @@
           } else {
             steps.push({
               type: 'snake',
+              hazardKind: STREAMS[curr] ? 'stream' : 'landslide',
               from: curr,
               to: dest
             });
@@ -285,12 +331,16 @@
     STEP_PITCH,
     ROW_HEIGHT,
     LADDERS,
+    STREAMS,
+    LANDSLIDES,
     SNAKES,
     MYSTERY_TILES,
     MYSTERY_EFFECTS,
     CHARACTERS,
     EMOTES,
     tileToGrid,
+    tileToClassicWorld,
+    tileToMountainWorld,
     tileToWorld,
     rollDiceValues,
     resolveTurn
