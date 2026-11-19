@@ -72,6 +72,16 @@ const el = {
   hudDiceResult: document.getElementById('hud-dice-result'),
   btnRollDice: document.getElementById('btn-roll-dice'),
 
+  modalQuest: document.getElementById('modal-quest'),
+  questBadge: document.getElementById('quest-badge'),
+  questTitle: document.getElementById('quest-title'),
+  questStory: document.getElementById('quest-story'),
+  questChoices: document.getElementById('quest-choices'),
+  questResult: document.getElementById('quest-result'),
+  questRewardBox: document.getElementById('quest-reward-box'),
+  questRewardActions: document.getElementById('quest-reward-actions'),
+  questWaitMsg: document.getElementById('quest-wait-msg'),
+
   victoryTitle: document.getElementById('victory-title'),
   victorySubtitle: document.getElementById('victory-subtitle'),
   victoryStandings: document.getElementById('victory-standings'),
@@ -103,6 +113,7 @@ const state = {
   room: null,
   myId: null,
   isAnimating: false,
+  isQuestOpen: false,
   pendingAnimPromise: Promise.resolve(),
   localBotTimer: null,
   bannerTimer: null
@@ -177,6 +188,14 @@ function setCameraModeUI(mode, playerId = null) {
   el.btnCamTpp.classList.toggle('active', mode === 'tpp');
   el.btnCamFpp.classList.toggle('active', mode === 'fpp');
   el.btnCamTop.classList.toggle('active', mode === 'top');
+  if (
+    state.boardStyle === 'mountain' &&
+    (mode === 'tpp' || mode === 'fpp') &&
+    active &&
+    BoardConfig.isWildernessTile(active.tile)
+  ) {
+    showBanner('🌲 Memasuki Hutan Belantara Gelap...', 2200);
+  }
 }
 
 function setBoardStyleUI(style) {
@@ -345,6 +364,7 @@ function startLocalMatch() {
   state.mode = 'local';
   state.myId = null;
   state.isAnimating = false;
+  state.isQuestOpen = false;
 
   const players = state.localSlots.map((s, idx) => ({
     id: `local_${idx}`,
@@ -372,7 +392,15 @@ function startLocalMatch() {
 }
 
 function scheduleLocalBotIfNeeded() {
-  if (state.mode !== 'local' || !state.room || state.room.phase !== 'playing' || state.isAnimating) return;
+  if (
+    state.mode !== 'local' ||
+    !state.room ||
+    state.room.phase !== 'playing' ||
+    state.isAnimating ||
+    state.isQuestOpen
+  ) {
+    return;
+  }
   const active = getActivePlayer();
   if (active && active.isBot) {
     if (state.localBotTimer) clearTimeout(state.localBotTimer);
@@ -383,7 +411,15 @@ function scheduleLocalBotIfNeeded() {
 }
 
 async function executeLocalTurn() {
-  if (state.mode !== 'local' || !state.room || state.room.phase !== 'playing' || state.isAnimating) return;
+  if (
+    state.mode !== 'local' ||
+    !state.room ||
+    state.room.phase !== 'playing' ||
+    state.isAnimating ||
+    state.isQuestOpen
+  ) {
+    return;
+  }
   const active = getActivePlayer();
   if (!active) return;
 
@@ -394,21 +430,34 @@ async function executeLocalTurn() {
   const result = BoardConfig.resolveTurn(active, diceValues, state.room.settings);
 
   await runTurnAnimation(active.id, result);
+  if (!state.room) return;
 
   active.tile = result.endTile;
   active.shield = result.shieldAfter;
   active.consecutiveBonus = result.nextConsecutiveBonus;
 
+  let finalWon = result.won;
+  let finalExtraTurn = result.extraTurn;
+
+  const quizObj = result.pendingQuiz || result.pendingQuest;
+  if (quizObj) {
+    state.isAnimating = false;
+    const quizOutcome = await openLocalQuizModal(active, quizObj, active.tile);
+    if (!state.room) return;
+    if (quizOutcome.won) finalWon = true;
+    if (quizOutcome.extraTurnOverride) finalExtraTurn = true;
+  }
+
   state.isAnimating = false;
 
-  if (result.won) {
+  if (finalWon) {
     state.room.phase = 'finished';
     state.room.winnerId = active.id;
     showVictoryModal(active.id);
     return;
   }
 
-  if (!result.extraTurn) {
+  if (!finalExtraTurn) {
     state.room.turnIndex = (state.room.turnIndex + 1) % state.room.players.length;
   }
 
@@ -618,7 +667,9 @@ socket.on('room_updated', ({ room }) => {
 socket.on('game_started', ({ room }) => {
   state.room = room;
   state.isAnimating = false;
+  state.isQuestOpen = false;
   state.pendingAnimPromise = Promise.resolve();
+  el.modalQuest.classList.add('hidden');
   el.modalVictory.classList.add('hidden');
   enterMatchView();
   const active = getActivePlayer();
@@ -632,8 +683,48 @@ socket.on('turn_executed', ({ playerId, result }) => {
   state.pendingAnimPromise = runTurnAnimation(playerId, result);
 });
 
+socket.on('quiz_prompt', async ({ playerId, tile, quiz, room }) => {
+  await state.pendingAnimPromise;
+  if (!state.room) return;
+  state.room = room;
+  state.isAnimating = false;
+  openOnlineQuizModal(playerId, tile, quiz);
+  updateHudState();
+});
+
+socket.on('quiz_revealed', ({ playerId, quizResult }) => {
+  if (!state.room) return;
+  revealOnlineQuizOutcome(playerId, quizResult);
+});
+
+socket.on('quiz_executed', ({ playerId, quizResult, room }) => {
+  if (!state.room) return;
+  el.modalQuest.classList.add('hidden');
+  state.isQuestOpen = false;
+  state.isAnimating = true;
+  updateHudState();
+
+  const player = state.room.players.find((p) => p.id === playerId);
+  const name = player ? player.name : 'Pemain';
+  state.pendingAnimPromise = (async () => {
+    const oc = quizResult.outcome;
+    if (quizResult.isCorrect) {
+      showBanner(`${oc.icon} ${name}: ${oc.title}!`);
+      addLog(`${oc.icon} ${name} mendapat hadiah acak: ${oc.title}`);
+    } else {
+      soundFX.playBounceBack();
+      showBanner(`${oc.icon} ${name} terkena ${oc.title}!`);
+      addLog(`${oc.icon} ${name} terkena hukuman acak: ${oc.title}`);
+    }
+    await animateStepsSequence(playerId, quizResult.steps || []);
+    state.room = room;
+  })();
+});
+
 socket.on('turn_ready', async ({ room }) => {
   await state.pendingAnimPromise;
+  el.modalQuest.classList.add('hidden');
+  state.isQuestOpen = false;
   state.room = room;
   state.isAnimating = false;
   const active = getActivePlayer();
@@ -646,6 +737,8 @@ socket.on('turn_ready', async ({ room }) => {
 
 socket.on('game_over', async ({ winnerId, room }) => {
   await state.pendingAnimPromise;
+  el.modalQuest.classList.add('hidden');
+  state.isQuestOpen = false;
   state.room = room;
   state.isAnimating = false;
   scene3d.syncPlayers(room.players, winnerId, true);
@@ -671,7 +764,9 @@ function getActivePlayer() {
 
 function enterMatchView() {
   el.hudLogList.innerHTML = '';
+  el.modalQuest.classList.add('hidden');
   el.modalVictory.classList.add('hidden');
+  state.isQuestOpen = false;
   showScreen('hud');
 
   setBoardStyleUI(state.room.settings.boardStyle || state.boardStyle);
@@ -719,13 +814,15 @@ function updateHudState() {
   });
 
   if (active) {
-    el.hudTurnLabel.textContent = state.isAnimating
+    el.hudTurnLabel.textContent = state.isQuestOpen
+      ? `❓ ${active.name} menjawab Kuis Mystery...`
+      : state.isAnimating
       ? `⏳ ${active.name} bergerak...`
       : `🎯 Giliran: ${active.name}`;
   }
 
   let canRoll = false;
-  if (state.room.phase === 'playing' && !state.isAnimating && active && !active.isBot) {
+  if (state.room.phase === 'playing' && !state.isAnimating && !state.isQuestOpen && active && !active.isBot) {
     if (state.mode === 'local') canRoll = true;
     else if (state.mode === 'online' && active.id === state.myId) canRoll = true;
   }
@@ -740,42 +837,36 @@ function updateHudTileForPlayer(playerId, tile) {
   if (card) card.textContent = `#${tile}`;
 }
 
-async function runTurnAnimation(playerId, result) {
+async function animateStepsSequence(playerId, steps) {
   const player = state.room?.players.find((p) => p.id === playerId);
   const name = player ? player.name : 'Pemain';
 
-  el.hudDiceResult.textContent = `Dadu: [${result.diceValues.join(' + ')}] = ${result.totalDice}`;
-  addLog(`${name} melempar dadu: ${result.diceValues.join(' + ')} (Total ${result.totalDice})`);
-
-  soundFX.playDiceRoll();
-  await scene3d.throwDice(result.diceValues);
-
-  for (const step of result.steps) {
+  for (const step of steps) {
+    if (!state.room) return;
     if (step.type === 'walk') {
       if (step.bounced) {
         showBanner('💥 Kelebihan langkah! Memantul mundur di 100!');
         soundFX.playBounceBack();
       }
+      let wasInWild = player ? BoardConfig.isWildernessTile(player.tile) : false;
       await scene3d.animateHopPath(playerId, step.path, (tile, idx) => {
         if (state.boardStyle === 'mountain') soundFX.playFootstep(idx);
         else soundFX.playHop(idx);
         updateHudTileForPlayer(playerId, tile);
+
+        const nowInWild =
+          state.boardStyle === 'mountain' &&
+          (state.cameraMode === 'tpp' || state.cameraMode === 'fpp') &&
+          BoardConfig.isWildernessTile(tile);
+        if (nowInWild && !wasInWild) {
+          showBanner('🌲 Memasuki Hutan Belantara Gelap...', 2200);
+        }
+        wasInWild = nowInWild;
       });
-    } else if (step.type === 'mystery') {
+    } else if (step.type === 'mystery_quiz') {
       soundFX.playMystery();
-      showBanner(`✨ ${step.title}: ${step.desc}`);
-      addLog(`✨ ${name} mendapat ${step.title}`);
-      if (step.effect === 'SHIELD') {
-        scene3d.updatePlayerShield(playerId, true);
-        if (player) player.shield = true;
-      }
-      if (step.path && step.path.length) {
-        await scene3d.animateHopPath(playerId, step.path, (tile, idx) => {
-          if (state.boardStyle === 'mountain') soundFX.playFootstep(idx);
-          else soundFX.playHop(idx);
-          updateHudTileForPlayer(playerId, tile);
-        });
-      }
+      showBanner(`❓ Kuis Mystery #${step.tile}: Jawab pertanyaan untuk hadiah acak!`);
+      addLog(`❓ ${name} membuka Kuis Mystery di #${step.tile}`);
     } else if (step.type === 'ladder') {
       soundFX.playLadderClimb();
       showBanner(`🪜 ${name} naik tangga! #${step.from} → #${step.to}`);
@@ -794,19 +885,42 @@ async function runTurnAnimation(playerId, result) {
           addLog(`🪨 ${name} meluncur longsor #${step.from} → #${step.to}`);
         }
       } else {
-        showBanner(`🐍 Aduh! ${name} digigit ular #${step.from} → #${step.to}`);
-        addLog(`🐍 ${name} meluncur di ular #${step.from} → #${step.to}`);
+        showBanner(`🌀 Aduh! ${name} terkena seluncuran rintangan #${step.from} → #${step.to}`);
+        addLog(`🌀 ${name} meluncur di rintangan #${step.from} → #${step.to}`);
       }
       await scene3d.animateSnakeSlide(playerId, step.from, step.to);
       updateHudTileForPlayer(playerId, step.to);
     } else if (step.type === 'shield_saved') {
       soundFX.playShieldSave();
-      showBanner(`🛡️ Tameng melindungi ${name} di titik #${step.tile}!`);
+      showBanner(`🛡️ Tameng Kebal Jatuh melindungi ${name} di titik #${step.tile}!`);
       addLog(`🛡️ Tameng ${name} pecah menahan rintangan #${step.tile}`);
       scene3d.updatePlayerShield(playerId, false);
       if (player) player.shield = false;
+    } else if (step.type === 'card_shield') {
+      soundFX.playMystery();
+      showBanner(`🛡️ ${name} mendapat Tameng Kebal Jatuh!`);
+      addLog(`🛡️ ${name} memasang Tameng Kebal Jatuh`);
+      scene3d.updatePlayerShield(playerId, true);
+      if (player) player.shield = true;
+    } else if (step.type === 'card_extra_dice') {
+      soundFX.playMystery();
+      showBanner(`🎲 ${name} mendapat Bonus Dadu Ekstra!`);
+      addLog(`🎲 ${name} memperoleh lemparan dadu ekstra`);
     }
   }
+}
+
+async function runTurnAnimation(playerId, result) {
+  const player = state.room?.players.find((p) => p.id === playerId);
+  const name = player ? player.name : 'Pemain';
+
+  el.hudDiceResult.textContent = `Dadu: [${result.diceValues.join(' + ')}] = ${result.totalDice}`;
+  addLog(`${name} melempar dadu: ${result.diceValues.join(' + ')} (Total ${result.totalDice})`);
+
+  soundFX.playDiceRoll();
+  await scene3d.throwDice(result.diceValues);
+
+  await animateStepsSequence(playerId, result.steps || []);
 
   if (result.extraTurn) {
     showBanner(`🎲 ${name} dapat giliran ekstra!`, 2000);
@@ -814,6 +928,198 @@ async function runTurnAnimation(playerId, result) {
   } else if (result.bonusLimitReached) {
     showBanner('⚠️ Maksimal 3x bonus giliran berturut-turut!', 2000);
   }
+}
+
+const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
+
+function renderQuizHeaderAndOptions(playerName, tile, quiz, isInteractive, onSelectOption) {
+  el.questBadge.textContent = `❓ KUIS MYSTERY PETAK #${tile} • ${quiz.category}`;
+  el.questTitle.textContent = quiz.question;
+  el.questStory.textContent = 'Jawab dengan benar untuk hadiah acak! Jawaban salah akan terkena hukuman acak.';
+  el.questResult.classList.add('hidden');
+  el.questRewardBox.innerHTML = '';
+  el.questRewardActions.innerHTML = '';
+  el.questChoices.innerHTML = '';
+
+  quiz.options.forEach((optText, idx) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'quest-choice-btn';
+    btn.disabled = !isInteractive;
+    btn.innerHTML = `<span><strong>${OPTION_LETTERS[idx] || idx + 1}.</strong> ${optText}</span>`;
+    if (isInteractive && typeof onSelectOption === 'function') {
+      btn.addEventListener('click', () => onSelectOption(idx));
+    }
+    el.questChoices.appendChild(btn);
+  });
+
+  if (!isInteractive) {
+    el.questWaitMsg.textContent = `⏳ Menunggu ${playerName} menjawab kuis...`;
+    el.questWaitMsg.classList.remove('hidden');
+  } else {
+    el.questWaitMsg.classList.add('hidden');
+  }
+
+  state.isQuestOpen = true;
+  el.modalQuest.classList.remove('hidden');
+}
+
+function renderQuizOutcomeFeedback(quizResult) {
+  el.questChoices.querySelectorAll('button').forEach((b, bIdx) => {
+    b.disabled = true;
+    b.classList.toggle('correct', bIdx === quizResult.correctIdx);
+    if (!quizResult.isCorrect && bIdx === quizResult.selectedIdx) {
+      b.classList.add('wrong');
+    }
+  });
+
+  const oc = quizResult.outcome;
+  if (quizResult.isCorrect) {
+    el.questRewardBox.style.borderColor = 'rgba(16, 185, 129, 0.7)';
+    el.questRewardBox.innerHTML = `
+      <div class="quest-reward-title" style="color:#6ee7b7">✅ Jawaban Benar! Hadiah Acak: ${oc.icon} ${oc.title}</div>
+      <div class="quest-reward-desc">${oc.desc}</div>
+    `;
+  } else {
+    el.questRewardBox.style.borderColor = 'rgba(239, 68, 68, 0.7)';
+    el.questRewardBox.innerHTML = `
+      <div class="quest-reward-title" style="color:#fca5a5">❌ Jawaban Salah! Hukuman Acak: ${oc.icon} ${oc.title}</div>
+      <div class="quest-reward-desc">${oc.desc}</div>
+    `;
+  }
+  el.questResult.classList.remove('hidden');
+}
+
+function openOnlineQuizModal(playerId, tile, quiz) {
+  const player = state.room?.players.find((p) => p.id === playerId);
+  const name = player ? player.name : 'Pemain';
+  const isMine = playerId === state.myId && !player?.isBot;
+
+  renderQuizHeaderAndOptions(name, tile, quiz, isMine, (idx) => {
+    el.questChoices.querySelectorAll('button').forEach((b, bIdx) => {
+      b.disabled = true;
+      b.classList.toggle('picked', bIdx === idx);
+    });
+    socket.emit('quiz_answer', { selectedIdx: idx });
+  });
+}
+
+function revealOnlineQuizOutcome(playerId, quizResult) {
+  soundFX.playMystery();
+  renderQuizOutcomeFeedback(quizResult);
+  el.questRewardActions.innerHTML = '';
+
+  const player = state.room?.players.find((p) => p.id === playerId);
+  const name = player ? player.name : 'Pemain';
+  const isMine = playerId === state.myId && !player?.isBot;
+
+  if (!isMine) {
+    el.questWaitMsg.textContent = `⏳ Menjalankan efek untuk ${name}...`;
+    el.questWaitMsg.classList.remove('hidden');
+    return;
+  }
+
+  el.questWaitMsg.classList.add('hidden');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = quizResult.isCorrect ? 'btn btn-primary' : 'btn btn-danger';
+  btn.textContent = '⚡ Jalankan Efek';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    socket.emit('quiz_execute');
+  });
+  el.questRewardActions.appendChild(btn);
+}
+
+function openLocalQuizModal(player, quiz, tile) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let autoExecTimer = null;
+    const finish = (outcomeResult) => {
+      if (settled) return;
+      settled = true;
+      if (autoExecTimer) clearTimeout(autoExecTimer);
+      el.modalQuest.classList.add('hidden');
+      state.isQuestOpen = false;
+      resolve(outcomeResult);
+    };
+
+    const isHuman = !player.isBot;
+    renderQuizHeaderAndOptions(player.name, tile, quiz, isHuman, (idx) => {
+      handleAnswer(idx);
+    });
+    updateHudState();
+
+    const handleAnswer = (selectedIdx) => {
+      if (!state.room) {
+        finish({ won: false, extraTurnOverride: false });
+        return;
+      }
+
+      soundFX.playMystery();
+      const quizRes = BoardConfig.resolveQuizAnswer(player, quiz.id, selectedIdx);
+      renderQuizOutcomeFeedback(quizRes);
+      el.questRewardActions.innerHTML = '';
+
+      let executed = false;
+      const runEffect = async () => {
+        if (executed) return;
+        executed = true;
+        if (autoExecTimer) clearTimeout(autoExecTimer);
+        el.modalQuest.classList.add('hidden');
+        state.isQuestOpen = false;
+        state.isAnimating = true;
+        updateHudState();
+
+        const oc = quizRes.outcome;
+        if (quizRes.isCorrect) {
+          showBanner(`${oc.icon} ${player.name}: ${oc.title}!`);
+          addLog(`✅ ${player.name} menjawab benar → ${oc.title}`);
+        } else {
+          soundFX.playBounceBack();
+          showBanner(`${oc.icon} ${player.name} terkena ${oc.title}!`);
+          addLog(`❌ ${player.name} salah menjawab → ${oc.title}`);
+        }
+
+        await animateStepsSequence(player.id, quizRes.steps);
+        player.tile = quizRes.endTile;
+        player.shield = quizRes.shieldAfter;
+        finish({ won: quizRes.won, extraTurnOverride: Boolean(quizRes.grantExtraTurn) });
+      };
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = quizRes.isCorrect ? 'btn btn-primary' : 'btn btn-danger';
+      btn.textContent = '⚡ Jalankan Efek';
+      btn.addEventListener('click', runEffect);
+      el.questRewardActions.appendChild(btn);
+
+      if (!isHuman) {
+        el.questWaitMsg.textContent = quizRes.isCorrect
+          ? `🤖 ${player.name} menjawab benar!`
+          : `🤖 ${player.name} menjawab salah!`;
+        el.questWaitMsg.classList.remove('hidden');
+      }
+
+      autoExecTimer = setTimeout(runEffect, 1400);
+    };
+
+    if (!isHuman) {
+      setTimeout(() => {
+        if (!state.room) {
+          finish({ won: false, extraTurnOverride: false });
+          return;
+        }
+        const isBotCorrect = Math.random() < 0.6;
+        let pick = quiz.answerIndex;
+        if (!isBotCorrect) {
+          const wrongIndices = [0, 1, 2, 3].filter((i) => i !== quiz.answerIndex);
+          pick = wrongIndices[Math.floor(Math.random() * wrongIndices.length)];
+        }
+        handleAnswer(pick);
+      }, 1000);
+    }
+  });
 }
 
 el.btnRollDice.addEventListener('click', () => {
@@ -831,7 +1137,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code !== 'Space') return;
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-  if (!el.screenHud.classList.contains('hidden') && !el.btnRollDice.disabled) {
+  if (!el.screenHud.classList.contains('hidden') && !el.btnRollDice.disabled && !state.isQuestOpen) {
     e.preventDefault();
     el.btnRollDice.click();
   }
@@ -900,6 +1206,8 @@ function resetToHome() {
   state.room = null;
   state.myId = null;
   state.isAnimating = false;
+  state.isQuestOpen = false;
+  el.modalQuest.classList.add('hidden');
   el.modalVictory.classList.add('hidden');
   scene3d.syncPlayers([], null, true);
   scene3d.setMysteryVisible(true);

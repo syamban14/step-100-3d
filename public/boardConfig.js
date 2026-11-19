@@ -6,7 +6,7 @@
   const STEP_PITCH = TILE_SIZE + TILE_GAP;
   const ROW_HEIGHT = 0.45;
 
-  // 8 Tangga (bawah -> atas), dipastikan tidak bertabrakan dengan ular/mystery
+  // 8 Tangga (bawah -> atas), dipastikan tidak bertabrakan dengan rintangan/mystery
   const LADDERS = {
     4: 25,
     13: 46,
@@ -18,7 +18,7 @@
     84: 97
   };
 
-  // 8 Ular (kepala -> ekor), dipastikan tidak bertabrakan dengan tangga/mystery
+  // 8 Jalur Rintangan Turun (atas -> bawah), dipastikan tidak bertabrakan dengan tangga/mystery
   // Di mode Gunung terbagi menjadi 4 Sungai Jeram & 4 Longsoran Tebing
   const STREAMS = {
     27: 5,
@@ -34,15 +34,222 @@
     99: 41
   };
 
-  const SNAKES = {
+  const HAZARDS = {
     ...STREAMS,
     ...LANDSLIDES
   };
+  const SNAKES = HAZARDS;
 
   // 10 Petak Kejutan (Mystery Tiles) bebas bentrok
   const MYSTERY_TILES = [8, 19, 29, 36, 48, 57, 68, 79, 86, 94];
 
-  const MYSTERY_EFFECTS = ['SHIELD', 'BOOST', 'MAGNET', 'TRAP'];
+  const WILDERNESS_ZONES = [
+    [15, 22],
+    [45, 50],
+    [63, 68]
+  ];
+
+  const GOOD_MYSTERY_REWARDS = [
+    {
+      id: 'SHIELD',
+      icon: '🛡️',
+      title: 'Tameng Kebal Jatuh',
+      desc: 'Melindungi 1x dari jalur rintangan turun (sungai jeram, longsor, atau seluncuran)!'
+    },
+    {
+      id: 'BOOST_3',
+      icon: '🚀',
+      title: 'Dorongan Semangat +3',
+      desc: 'Melangkah maju 3 petak!',
+      delta: 3
+    },
+    {
+      id: 'BOOST_4',
+      icon: '🥾',
+      title: 'Langkah Ekspedisi +4',
+      desc: 'Berjalan cepat maju 4 petak!',
+      delta: 4
+    },
+    {
+      id: 'MAGNET',
+      icon: '🧭',
+      title: 'Kompas Magnet Tangga',
+      desc: 'Tertarik maju menuju kaki tangga terdekat di depan!'
+    },
+    {
+      id: 'EXTRA_DICE',
+      icon: '🎲',
+      title: 'Bonus Dadu Ekstra',
+      desc: 'Mendapatkan 1x lemparan dadu tambahan!'
+    }
+  ];
+
+  const BAD_MYSTERY_PENALTIES = [
+    {
+      id: 'TRAP_2',
+      icon: '⚠️',
+      title: 'Jebakan Kabut -2',
+      desc: 'Salah arah di tengah kabut, mundur 2 petak!',
+      delta: -2
+    },
+    {
+      id: 'TRAP_3',
+      icon: '🪨',
+      title: 'Kerikil Licin -3',
+      desc: 'Terpeleset mundur 3 petak!',
+      delta: -3
+    },
+    {
+      id: 'TRAP_4',
+      icon: '🌪️',
+      title: 'Angin Badai -4',
+      desc: 'Terdorong angin kencang mundur 4 petak!',
+      delta: -4
+    }
+  ];
+
+  const MYSTERY_QUIZZES = [
+    {
+      id: 'q1',
+      category: 'Alam & Gunung',
+      question: 'Gunung berapi tertinggi di Indonesia yang berada di Pulau Jawa adalah?',
+      options: ['Gunung Bromo', 'Gunung Semeru', 'Gunung Merapi', 'Gunung Rinjani'],
+      answerIndex: 1
+    },
+    {
+      id: 'q2',
+      category: 'Sains',
+      question: 'Gas apakah yang jumlahnya paling banyak di atmosfer Bumi?',
+      options: ['Oksigen', 'Karbon Dioksida', 'Nitrogen', 'Hidrogen'],
+      answerIndex: 2
+    },
+    {
+      id: 'q3',
+      category: 'Pengetahuan Umum',
+      question: 'Berapa jumlah sisi yang dimiliki sebuah dadu kubus standar?',
+      options: ['4 sisi', '6 sisi', '8 sisi', '12 sisi'],
+      answerIndex: 1
+    },
+    {
+      id: 'q4',
+      category: 'Logika',
+      question: 'Jika 1 + 4 = 5, 2 + 5 = 12, 3 + 6 = 21, maka nilai 4 + 7 = ...?',
+      options: ['28', '30', '32', '36'],
+      answerIndex: 2
+    },
+    {
+      id: 'q5',
+      category: 'Alam & Gunung',
+      question: 'Alat navigasi tradisional yang jarumnya selalu menunjuk ke arah utara magnet bumi adalah?',
+      options: ['Altimeter', 'Kompas', 'Barometer', 'Higrometer'],
+      answerIndex: 1
+    },
+    {
+      id: 'q6',
+      category: 'Sains',
+      question: 'Planet terbesar dalam tata surya kita adalah?',
+      options: ['Saturnus', 'Mars', 'Jupiter', 'Neptunus'],
+      answerIndex: 2
+    },
+    {
+      id: 'q7',
+      category: 'Alam & Gunung',
+      question: 'Proses penguapan air dari permukaan laut dan sungai oleh panas matahari disebut?',
+      options: ['Kondensasi', 'Evaporasi', 'Presipitasi', 'Infiltrasi'],
+      answerIndex: 1
+    },
+    {
+      id: 'q8',
+      category: 'Logika',
+      question: 'Di suatu lomba lari, kamu berhasil menyalip peserta di posisi ke-2. Sekarang kamu di posisi ke berapa?',
+      options: ['Posisi ke-1', 'Posisi ke-2', 'Posisi ke-3', 'Posisi ke-4'],
+      answerIndex: 1
+    },
+    {
+      id: 'q9',
+      category: 'Pengetahuan Umum',
+      question: 'Samudra paling luas di permukaan Bumi adalah?',
+      options: ['Samudra Atlantik', 'Samudra Hindia', 'Samudra Arktik', 'Samudra Pasifik'],
+      answerIndex: 3
+    },
+    {
+      id: 'q10',
+      category: 'Sains',
+      question: 'Pada suhu berapakah air murni mendidih pada tekanan 1 atmosfer di permukaan laut?',
+      options: ['80 °C', '90 °C', '100 °C', '110 °C'],
+      answerIndex: 2
+    },
+    {
+      id: 'q11',
+      category: 'Alam & Gunung',
+      question: 'Danau vulkanik terbesar di Indonesia yang berada di Sumatra Utara adalah?',
+      options: ['Danau Maninjau', 'Danau Toba', 'Danau Singkarak', 'Danau Poso'],
+      answerIndex: 1
+    },
+    {
+      id: 'q12',
+      category: 'Logika',
+      question: 'Deret angka: 3, 6, 12, 24, ... Angka selanjutnya adalah?',
+      options: ['36', '42', '48', '54'],
+      answerIndex: 2
+    },
+    {
+      id: 'q13',
+      category: 'Pengetahuan Umum',
+      question: 'Benua manakah yang memiliki jumlah negara terbanyak di dunia?',
+      options: ['Asia', 'Eropa', 'Amerika Selatan', 'Afrika'],
+      answerIndex: 3
+    },
+    {
+      id: 'q14',
+      category: 'Sains',
+      question: 'Bagian tumbuhan hijau yang menjadi tempat utama berlangsungnya fotosintesis adalah?',
+      options: ['Akar', 'Batang', 'Daun', 'Biji'],
+      answerIndex: 2
+    },
+    {
+      id: 'q15',
+      category: 'Alam & Gunung',
+      question: 'Fenomena turunnya suhu udara rata-rata sekitar 0,6 °C setiap naik 100 meter di gunung membuat udara puncak terasa?',
+      options: ['Lebih panas', 'Lebih dingin', 'Lebih lembap pekat', 'Tak berubah'],
+      answerIndex: 1
+    },
+    {
+      id: 'q16',
+      category: 'Logika',
+      question: 'Jumlah titik total pada dua sisi yang berlawanan pada dadu standar selalu sama dengan?',
+      options: ['6', '7', '8', '9'],
+      answerIndex: 1
+    },
+    {
+      id: 'q17',
+      category: 'Pengetahuan Umum',
+      question: 'Negara yang terkenal dengan julukan Negeri Matahari Terbit adalah?',
+      options: ['Korea Selatan', 'Thailand', 'Jepang', 'Vietnam'],
+      answerIndex: 2
+    },
+    {
+      id: 'q18',
+      category: 'Sains',
+      question: 'Alat untuk mengukur ketinggian suatu tempat dari permukaan laut saat mendaki adalah?',
+      options: ['Altimeter', 'Anemometer', 'Amperemeter', 'Termometer'],
+      answerIndex: 0
+    },
+    {
+      id: 'q19',
+      category: 'Alam & Gunung',
+      question: 'Puncak tertinggi di Indonesia sekaligus masuk daftar Seven Summits dunia adalah?',
+      options: ['Puncak Jaya (Carstensz)', 'Gunung Kerinci', 'Gunung Latimojong', 'Gunung Agung'],
+      answerIndex: 0
+    },
+    {
+      id: 'q20',
+      category: 'Logika',
+      question: 'Ayah memiliki 4 anak: Senin, Selasa, Rabu. Siapa nama anak ke-4 jika seluruhnya sudah disebut kecuali satu nama yang paling mungkin di cerita?',
+      options: ['Kamis', 'Jumat', 'Sabtu', 'Anak terakhir bernama sesuai penanya: Kamu'],
+      answerIndex: 0
+    }
+  ];
 
   const CHARACTERS = [
     {
@@ -200,6 +407,144 @@
     return { path, endTile: curr };
   }
 
+  function getWildernessZoneIndex(tile) {
+    const t = Number(tile);
+    return WILDERNESS_ZONES.findIndex(([a, b]) => t >= a && t <= b);
+  }
+
+  function isWildernessTile(tile) {
+    return getWildernessZoneIndex(tile) !== -1;
+  }
+
+  function getQuizForTile(tile, rngFn) {
+    const rand = typeof rngFn === 'function' ? rngFn : Math.random;
+    const idx = Math.floor(rand() * MYSTERY_QUIZZES.length);
+    return MYSTERY_QUIZZES[idx];
+  }
+
+  function resolvePostWalkTile(startTile, delta, playerState) {
+    let shield = Boolean(playerState && playerState.shield);
+    const steps = [];
+    const walkRes = buildStepPath(startTile, delta);
+    let curr = walkRes.endTile;
+
+    if (walkRes.path.length > 0) {
+      steps.push({
+        type: 'walk',
+        from: startTile,
+        to: curr,
+        path: walkRes.path,
+        bounced: delta > 0 && startTile + delta > 100
+      });
+    }
+
+    if (curr !== 100) {
+      if (LADDERS[curr]) {
+        const dest = LADDERS[curr];
+        steps.push({
+          type: 'ladder',
+          from: curr,
+          to: dest
+        });
+        curr = dest;
+      } else if (HAZARDS[curr]) {
+        const dest = HAZARDS[curr];
+        if (shield) {
+          shield = false;
+          steps.push({
+            type: 'shield_saved',
+            tile: curr,
+            avoidedTo: dest
+          });
+        } else {
+          steps.push({
+            type: 'snake',
+            hazardKind: STREAMS[curr] ? 'stream' : 'landslide',
+            from: curr,
+            to: dest
+          });
+          curr = dest;
+        }
+      }
+    }
+
+    return {
+      startTile,
+      endTile: curr,
+      shieldAfter: shield,
+      steps,
+      won: curr === 100
+    };
+  }
+
+  function resolveQuizAnswer(playerState, quizId, selectedIdx, rngFn) {
+    const rand = typeof rngFn === 'function' ? rngFn : Math.random;
+    const quiz = MYSTERY_QUIZZES.find((q) => q.id === quizId) || MYSTERY_QUIZZES[0];
+    const pickedIdx = Number(selectedIdx);
+    const isCorrect = pickedIdx === quiz.answerIndex;
+    const startTile = playerState.tile || 0;
+    const shieldNow = Boolean(playerState.shield);
+
+    const pool = isCorrect ? GOOD_MYSTERY_REWARDS : BAD_MYSTERY_PENALTIES;
+    const outcome = { ...pool[Math.floor(rand() * pool.length)] };
+
+    if (outcome.id === 'SHIELD') {
+      return {
+        quizId: quiz.id,
+        selectedIdx: pickedIdx,
+        correctIdx: quiz.answerIndex,
+        isCorrect,
+        outcome,
+        startTile,
+        endTile: startTile,
+        shieldAfter: true,
+        steps: [{ type: 'card_shield', tile: startTile }],
+        won: false,
+        grantExtraTurn: false
+      };
+    }
+
+    if (outcome.id === 'EXTRA_DICE') {
+      return {
+        quizId: quiz.id,
+        selectedIdx: pickedIdx,
+        correctIdx: quiz.answerIndex,
+        isCorrect,
+        outcome,
+        startTile,
+        endTile: startTile,
+        shieldAfter: shieldNow,
+        steps: [{ type: 'card_extra_dice', tile: startTile }],
+        won: false,
+        grantExtraTurn: true
+      };
+    }
+
+    let delta = outcome.delta || 0;
+    if (outcome.id === 'MAGNET') {
+      const ladderStarts = Object.keys(LADDERS)
+        .map(Number)
+        .filter((k) => k > startTile && k - startTile <= 10)
+        .sort((a, b) => a - b);
+      delta = ladderStarts.length > 0 ? ladderStarts[0] - startTile : 4;
+    }
+
+    const walkEffect = resolvePostWalkTile(startTile, delta, playerState);
+    return {
+      quizId: quiz.id,
+      selectedIdx: pickedIdx,
+      correctIdx: quiz.answerIndex,
+      isCorrect,
+      outcome,
+      startTile,
+      endTile: walkEffect.endTile,
+      shieldAfter: walkEffect.shieldAfter,
+      steps: walkEffect.steps,
+      won: walkEffect.won,
+      grantExtraTurn: false
+    };
+  }
+
   function resolveTurn(playerState, diceValues, settings, rngFn) {
     const rand = typeof rngFn === 'function' ? rngFn : Math.random;
     const mysteryEnabled = settings ? settings.mysteryTiles !== false : true;
@@ -224,74 +569,20 @@
       bounced
     });
 
+    let pendingQuiz = null;
+
     // 2. Cek apakah mendarat tepat di petak 100
     if (curr !== 100) {
-      // 3. Cek Mystery Tile jika aktif
+      // 3. Cek Mystery Tile -> memicu Kuis Pertanyaan interaktif (hadiah acak langsung)
       if (mysteryEnabled && MYSTERY_TILES.includes(curr)) {
-        const effectIdx = Math.floor(rand() * MYSTERY_EFFECTS.length);
-        const effect = MYSTERY_EFFECTS[effectIdx];
-        const mysteryTile = curr;
-
-        if (effect === 'SHIELD') {
-          shield = true;
-          steps.push({
-            type: 'mystery',
-            effect: 'SHIELD',
-            tile: mysteryTile,
-            to: curr,
-            path: [],
-            title: 'Tameng Anti-Ular',
-            desc: 'Melindungi 1x dari gigitan ular berikutnya!'
-          });
-        } else if (effect === 'BOOST') {
-          const boostRes = buildStepPath(curr, 3);
-          curr = boostRes.endTile;
-          steps.push({
-            type: 'mystery',
-            effect: 'BOOST',
-            tile: mysteryTile,
-            to: curr,
-            path: boostRes.path,
-            title: 'Dorongan Roket +3',
-            desc: `Meluncur maju 3 petak ke #${curr}!`
-          });
-        } else if (effect === 'MAGNET') {
-          const ladderStarts = Object.keys(LADDERS)
-            .map(Number)
-            .filter((k) => k > curr && k - curr <= 8)
-            .sort((a, b) => a - b);
-          const delta = ladderStarts.length > 0 ? ladderStarts[0] - curr : 2;
-          const magRes = buildStepPath(curr, delta);
-          curr = magRes.endTile;
-          steps.push({
-            type: 'mystery',
-            effect: 'MAGNET',
-            tile: mysteryTile,
-            to: curr,
-            path: magRes.path,
-            title: 'Magnet Tangga',
-            desc:
-              ladderStarts.length > 0
-                ? `Tertarik ke kaki tangga di petak #${curr}!`
-                : `Dorongan magnet maju 2 petak ke #${curr}!`
-          });
-        } else {
-          const trapRes = buildStepPath(curr, -2);
-          curr = trapRes.endTile;
-          steps.push({
-            type: 'mystery',
-            effect: 'TRAP',
-            tile: mysteryTile,
-            to: curr,
-            path: trapRes.path,
-            title: 'Jebakan Pasir -2',
-            desc: `Terpeleset mundur ke petak #${curr}!`
-          });
-        }
-      }
-
-      // 4. Cek Tangga atau Ular pada petak pendaratan (setelah mystery)
-      if (curr !== 100) {
+        pendingQuiz = getQuizForTile(curr, rand);
+        steps.push({
+          type: 'mystery_quiz',
+          tile: curr,
+          quiz: pendingQuiz
+        });
+      } else {
+        // 4. Cek Tangga atau Rintangan Turun pada petak pendaratan
         if (LADDERS[curr]) {
           const dest = LADDERS[curr];
           steps.push({
@@ -300,8 +591,8 @@
             to: dest
           });
           curr = dest;
-        } else if (SNAKES[curr]) {
-          const dest = SNAKES[curr];
+        } else if (HAZARDS[curr]) {
+          const dest = HAZARDS[curr];
           if (shield) {
             shield = false;
             steps.push({
@@ -338,6 +629,8 @@
       endTile: curr,
       shieldAfter: shield,
       steps,
+      pendingQuiz,
+      pendingQuest: pendingQuiz,
       won,
       extraTurn,
       nextConsecutiveBonus,
@@ -353,17 +646,26 @@
     LADDERS,
     STREAMS,
     LANDSLIDES,
+    HAZARDS,
     SNAKES,
     MYSTERY_TILES,
-    MYSTERY_EFFECTS,
+    WILDERNESS_ZONES,
+    MYSTERY_QUIZZES,
+    GOOD_MYSTERY_REWARDS,
+    BAD_MYSTERY_PENALTIES,
     CHARACTERS,
     EMOTES,
     tileToGrid,
     tileToClassicWorld,
     tileToMountainWorld,
     tileToWorld,
+    getWildernessZoneIndex,
+    isWildernessTile,
     getMountainStepWaypoints,
     rollDiceValues,
+    getQuizForTile,
+    resolvePostWalkTile,
+    resolveQuizAnswer,
     resolveTurn
   };
 

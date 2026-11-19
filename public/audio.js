@@ -1,4 +1,4 @@
-// Web Audio API Procedural Synthesizer untuk Efek Suara Ular Tangga 3D
+// Web Audio API Procedural Synthesizer untuk Efek Suara Step 100 3D
 class SoundFX {
   constructor() {
     this.ctx = null;

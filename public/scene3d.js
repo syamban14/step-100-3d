@@ -46,6 +46,13 @@ export class GameScene3D {
     this.cameraPresetLockUntil = 0;
     this.tppRaycaster = new THREE.Raycaster();
     this.tppColliders = [];
+    this.mountainTreeMeshes = [];
+    this._treeWorldPos = new THREE.Vector3();
+    this.wildernessGroup = null;
+    this.wildernessZoneGroups = [];
+    this.wildernessZoneFireflies = [];
+    this.wildernessLights = [];
+    this.wildernessBlend = 0;
 
     this.pawns = new Map();
     this.pawnTargets = new Map();
@@ -646,40 +653,31 @@ export class GameScene3D {
       snakeMesh.receiveShadow = true;
       this.classicGroup.add(snakeMesh);
 
-      // Kepala Ular di titik start
-      const headGroup = new THREE.Group();
-      headGroup.position.copy(start);
+      // Portal Seluncuran Rintangan di titik start
+      const portalGroup = new THREE.Group();
+      portalGroup.position.copy(start);
       const tangent = curve.getTangent(0.02);
-      headGroup.lookAt(start.clone().add(tangent));
+      portalGroup.lookAt(start.clone().add(tangent));
 
-      const headMat = new THREE.MeshStandardMaterial({ color: c1, roughness: 0.4 });
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), headMat);
-      head.scale.set(1.05, 0.78, 1.35);
-      head.castShadow = true;
-      headGroup.add(head);
-
-      // Mata putih + pupil hitam
-      const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
-      const pupilMat = new THREE.MeshBasicMaterial({ color: '#111111' });
-      [-0.22, 0.22].forEach((ex) => {
-        const ew = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 8), eyeWhiteMat);
-        ew.position.set(ex, 0.2, 0.26);
-        headGroup.add(ew);
-
-        const ep = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), pupilMat);
-        ep.position.set(ex, 0.22, 0.34);
-        headGroup.add(ep);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: c1,
+        emissive: c1,
+        emissiveIntensity: 0.35,
+        metalness: 0.4,
+        roughness: 0.25
       });
+      const portalRing = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.08, 10, 24), ringMat);
+      portalRing.castShadow = true;
+      portalGroup.add(portalRing);
 
-      // Lidah merah menjulur
-      const tongue = new THREE.Mesh(
-        new THREE.BoxGeometry(0.07, 0.03, 0.45),
-        new THREE.MeshBasicMaterial({ color: '#ff3b5c' })
+      const portalDisc = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.38, 0.38, 0.05, 20),
+        new THREE.MeshBasicMaterial({ color: c2, transparent: true, opacity: 0.65 })
       );
-      tongue.position.set(0, -0.05, 0.65);
-      headGroup.add(tongue);
+      portalDisc.rotation.x = Math.PI / 2;
+      portalGroup.add(portalDisc);
 
-      this.classicGroup.add(headGroup);
+      this.classicGroup.add(portalGroup);
     });
   }
 
@@ -1262,8 +1260,74 @@ export class GameScene3D {
     });
     loader.load('./assets/models/mountain_scenery.glb', (gltf) => {
       const root = this.prepareLoadedGltf(gltf.scene);
-      this.registerTppColliders(root);
+      root.traverse((child) => {
+        if (child.isMesh && (child.name.includes('Tree') || child.parent?.name?.includes('Tree'))) {
+          this.mountainTreeMeshes.push(child);
+        }
+      });
       this.mountainGroup.add(root);
+    });
+
+    // Grup Hutan Belantara Dunia Gelap Per-Zona (hanya aktif saat berada di dalam zona & kamera TPP/FPP)
+    this.wildernessGroup = new THREE.Group();
+    this.wildernessGroup.visible = false;
+    this.mountainGroup.add(this.wildernessGroup);
+
+    this.wildernessZoneGroups = [0, 1, 2].map(() => {
+      const zg = new THREE.Group();
+      zg.visible = false;
+      this.wildernessGroup.add(zg);
+      return zg;
+    });
+    this.wildernessLights = [];
+    this.wildernessZoneFireflies = [];
+
+    loader.load('./assets/models/wilderness_forest.glb', (gltf) => {
+      const wfRoot = this.prepareLoadedGltf(gltf.scene);
+      [...wfRoot.children].forEach((child) => {
+        const match = /_z([012])_/.exec(child.name || '');
+        const zIdx = match ? Number(match[1]) : 0;
+        const targetGroup = this.wildernessZoneGroups[zIdx] || this.wildernessZoneGroups[0];
+        targetGroup.add(child);
+      });
+    });
+
+    [18, 47, 65].forEach((wt, zIdx) => {
+      const wp = BoardConfig.tileToMountainWorld(wt);
+      const wLight = new THREE.PointLight('#2dd4bf', 0, 9.5, 1.4);
+      wLight.position.set(wp.x, wp.y + 1.85, wp.z);
+      this.wildernessZoneGroups[zIdx].add(wLight);
+      this.wildernessLights.push(wLight);
+    });
+
+    BoardConfig.WILDERNESS_ZONES.forEach(([zStart, zEnd], zIdx) => {
+      const count = 30;
+      const fireflyPositions = new Float32Array(count * 3);
+      const baseY = [];
+      for (let i = 0; i < count; i++) {
+        const tileSample = zStart + Math.floor(i * ((zEnd - zStart + 1) / count));
+        const tp = BoardConfig.tileToMountainWorld(tileSample);
+        const fx = tp.x + (Math.random() - 0.5) * 3.0;
+        const fy = tp.y + 0.8 + Math.random() * 2.0;
+        const fz = tp.z + (Math.random() - 0.5) * 2.4;
+        fireflyPositions[i * 3] = fx;
+        fireflyPositions[i * 3 + 1] = fy;
+        fireflyPositions[i * 3 + 2] = fz;
+        baseY.push(fy);
+      }
+      const flyGeo = new THREE.BufferGeometry();
+      flyGeo.setAttribute('position', new THREE.BufferAttribute(fireflyPositions, 3));
+      const flyMat = new THREE.PointsMaterial({
+        color: '#5eead4',
+        size: 0.16,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const points = new THREE.Points(flyGeo, flyMat);
+      this.wildernessZoneGroups[zIdx].add(points);
+      this.wildernessZoneFireflies.push({ points, mat: flyMat, baseY });
     });
     loader.load('./assets/models/summit_set.glb', (gltf) => {
       const root = this.prepareLoadedGltf(gltf.scene);
@@ -1622,7 +1686,7 @@ export class GameScene3D {
     root.userData.visualHolder = visualHolder;
     this.populatePawnVisual(root, characterId);
 
-    // Aura Tameng Anti-Ular / Pelindung
+    // Aura Pelindung Kebal Jatuh
     const shieldAura = new THREE.Mesh(
       new THREE.SphereGeometry(0.76, 16, 12),
       new THREE.MeshBasicMaterial({
@@ -1804,10 +1868,40 @@ export class GameScene3D {
     });
   }
 
+  updateTppTreeOcclusion(camPos, pawnPos) {
+    if (!this.mountainTreeMeshes.length) return;
+    const isTppMountain = this.cameraMode === 'tpp' && this.boardStyle === 'mountain' && Boolean(camPos && pawnPos);
+    if (!isTppMountain) {
+      for (const m of this.mountainTreeMeshes) m.visible = true;
+      return;
+    }
+    const vx = pawnPos.x - camPos.x;
+    const vz = pawnPos.z - camPos.z;
+    const len2 = vx * vx + vz * vz;
+    for (const m of this.mountainTreeMeshes) {
+      m.getWorldPosition(this._treeWorldPos);
+      const wx = this._treeWorldPos.x - camPos.x;
+      const wz = this._treeWorldPos.z - camPos.z;
+      const distCam = Math.hypot(wx, wz);
+      let hide = distCam < 1.45;
+      if (!hide && len2 > 0.01) {
+        const t = (wx * vx + wz * vz) / len2;
+        if (t > -0.15 && t < 0.92) {
+          const px = camPos.x + t * vx;
+          const pz = camPos.z + t * vz;
+          const segDist = Math.hypot(this._treeWorldPos.x - px, this._treeWorldPos.z - pz);
+          if (segDist < 1.02) hide = true;
+        }
+      }
+      m.visible = !hide;
+    }
+  }
+
   setCameraMode(mode, activePlayerId = null) {
     this.cameraMode = ['overview', 'tpp', 'fpp', 'top'].includes(mode) ? mode : 'overview';
     if (activePlayerId) this.setActivePlayer(activePlayerId);
     else this.syncFppVisibility();
+    this.updateTppTreeOcclusion(null, null);
 
     const isPov = this.cameraMode === 'tpp' || this.cameraMode === 'fpp';
     this.controls.enabled = !isPov;
@@ -2190,6 +2284,7 @@ export class GameScene3D {
     if (this.cameraMode !== 'tpp' && this.cameraMode !== 'fpp') {
       this.setCameraPreset(this.cameraMode);
     }
+    this.updateTppTreeOcclusion(null, null);
   }
 
   setAutoFollow(enabled) {
@@ -2391,6 +2486,7 @@ export class GameScene3D {
         this.camera.position.lerp(desiredPos, 0.14);
         this.controls.target.lerp(lookTarget, 0.18);
         this.camera.lookAt(this.controls.target);
+        this.updateTppTreeOcclusion(this.camera.position, povPawn.position);
       } else {
         this.syncFppVisibility();
         const bob = povPawn.userData?.rig?.bodyGroup?.position?.y || 0;
@@ -2430,7 +2526,90 @@ export class GameScene3D {
       this.controls.update();
     }
 
+    this.updateWildernessAtmosphere(t);
     this.renderer.render(this.scene, this.camera);
     this.updateOverlays();
+  }
+
+  updateWildernessAtmosphere(t) {
+    const isMountain = this.boardStyle === 'mountain';
+    const isPov = this.cameraMode === 'tpp' || this.cameraMode === 'fpp';
+    const activeMeta = this.activePlayerId ? this.pawnMeta.get(this.activePlayerId) : null;
+    const zoneIdx =
+      isMountain && isPov && activeMeta ? BoardConfig.getWildernessZoneIndex(activeMeta.tile) : -1;
+    const inWilderness = zoneIdx !== -1;
+
+    if (this.wildernessGroup) {
+      this.wildernessGroup.visible = inWilderness;
+    }
+    this.wildernessZoneGroups.forEach((zg, idx) => {
+      zg.visible = inWilderness && idx === zoneIdx;
+    });
+
+    if (!isMountain || !isPov) {
+      if (this.wildernessBlend > 0) {
+        this.wildernessBlend = 0;
+        this.setTheme(this.theme);
+      }
+      this.wildernessLights.forEach((l) => {
+        l.intensity = 0;
+      });
+      this.wildernessZoneFireflies.forEach(({ mat }) => {
+        mat.opacity = 0;
+      });
+      return;
+    }
+
+    const target = inWilderness ? 1 : 0;
+    this.wildernessBlend += (target - this.wildernessBlend) * 0.08;
+    if (!inWilderness && this.wildernessBlend < 0.003) {
+      this.wildernessBlend = 0;
+      this.setTheme(this.theme);
+      this.wildernessLights.forEach((l) => {
+        l.intensity = 0;
+      });
+      this.wildernessZoneFireflies.forEach(({ mat }) => {
+        mat.opacity = 0;
+      });
+      return;
+    }
+
+    const b = this.wildernessBlend;
+    const isNight = this.theme === 'night';
+    const baseSky = new THREE.Color(isNight ? '#090f24' : '#74ccf4');
+    const baseFog = new THREE.Color(isNight ? '#0d1633' : '#8cd9fa');
+    const abyss = new THREE.Color('#040d12');
+    const baseHemiColor = new THREE.Color(isNight ? '#4c6ef5' : '#ffffff');
+    const tealTint = new THREE.Color('#2dd4bf');
+
+    if (b > 0.001) {
+      this.scene.background = baseSky.lerp(abyss, b);
+      if (this.scene.fog) {
+        this.scene.fog.color.copy(baseFog).lerp(abyss, b);
+        this.scene.fog.density = THREE.MathUtils.lerp(isNight ? 0.011 : 0.0085, 0.034, b);
+      }
+      this.dirLight.intensity = THREE.MathUtils.lerp(isNight ? 0.65 : 1.55, 0.20, b);
+      this.hemiLight.intensity = THREE.MathUtils.lerp(isNight ? 0.55 : 0.88, 0.30, b);
+      this.hemiLight.color.copy(baseHemiColor).lerp(tealTint, b);
+      this.fillLight.intensity = THREE.MathUtils.lerp(isNight ? 0.25 : 0.45, 0.14, b);
+      if (this.starMat) {
+        this.starMat.opacity = Math.max(isNight ? 0.9 : 0, b * 0.85);
+      }
+    }
+
+    this.wildernessLights.forEach((l, idx) => {
+      l.intensity = idx === zoneIdx ? 2.8 * b : 0;
+    });
+
+    this.wildernessZoneFireflies.forEach((zoneFly, idx) => {
+      const activeZoneFly = inWilderness && idx === zoneIdx;
+      zoneFly.mat.opacity = activeZoneFly ? 0.9 * b : 0;
+      if (!activeZoneFly) return;
+      const posAttr = zoneFly.points.geometry.attributes.position;
+      for (let i = 0; i < posAttr.count; i++) {
+        posAttr.setY(i, zoneFly.baseY[i] + Math.sin(t * 1.9 + i * 0.65) * 0.25);
+      }
+      posAttr.needsUpdate = true;
+    });
   }
 }

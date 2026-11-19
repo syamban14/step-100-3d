@@ -73,17 +73,17 @@ function serializeRoom(room) {
 }
 
 function estimateAnimDurationMs(result) {
-  let ms = 1250; // Lempar dadu 3D & pantulan
-  for (const step of result.steps) {
+  let ms = result.diceValues ? 1250 : 250; // Lempar dadu 3D & pantulan jika ada
+  for (const step of result.steps || []) {
     if (step.type === 'walk') {
       ms += Math.max(1, step.path.length) * 780 + 250;
-    } else if (step.type === 'mystery') {
-      ms += 1000 + (step.path ? step.path.length * 750 : 0);
+    } else if (step.type === 'mystery_quiz') {
+      ms += 900;
     } else if (step.type === 'ladder') {
       ms += 1850;
     } else if (step.type === 'snake') {
       ms += 2050;
-    } else if (step.type === 'shield_saved') {
+    } else if (step.type === 'shield_saved' || step.type === 'card_shield' || step.type === 'card_extra_dice') {
       ms += 800;
     }
   }
@@ -99,14 +99,110 @@ function clearRoomTimers(room) {
     clearTimeout(room.botTimer);
     room.botTimer = null;
   }
+  if (room.questTimer) {
+    clearTimeout(room.questTimer);
+    room.questTimer = null;
+  }
   if (room.cleanupTimer) {
     clearTimeout(room.cleanupTimer);
     room.cleanupTimer = null;
   }
 }
 
+function finalizeTurnAfterActions(room, player, won, extraTurn) {
+  room.isTurnResolving = false;
+  if (won) {
+    room.phase = 'finished';
+    room.winnerId = player.id;
+    io.to(room.code).emit('game_over', {
+      winnerId: player.id,
+      room: serializeRoom(room)
+    });
+    return;
+  }
+  if (!extraTurn) {
+    room.turnIndex = (room.turnIndex + 1) % room.players.length;
+  }
+  io.to(room.code).emit('turn_ready', {
+    room: serializeRoom(room),
+    extraTurn: Boolean(extraTurn)
+  });
+  scheduleBotIfNeeded(room);
+}
+
+function executeOnlineQuizSteps(room) {
+  const pending = room.pendingQuiz;
+  if (!pending || !pending.answerResult) return;
+  const player = room.players.find((p) => p.id === pending.playerId);
+  if (!player) return;
+
+  room.pendingQuiz = null;
+  room.isTurnResolving = true;
+
+  const quizResult = pending.answerResult;
+  const grantExtraTurn = Boolean(quizResult.grantExtraTurn) || Boolean(pending.extraTurn);
+  const animDurationMs = estimateAnimDurationMs({ steps: quizResult.steps });
+
+  io.to(room.code).emit('quiz_executed', {
+    playerId: player.id,
+    quizResult,
+    room: serializeRoom(room)
+  });
+
+  if (room.turnTimer) clearTimeout(room.turnTimer);
+  room.turnTimer = setTimeout(() => {
+    if (!rooms.has(room.code)) return;
+    finalizeTurnAfterActions(room, player, quizResult.won, grantExtraTurn);
+  }, animDurationMs);
+}
+
+function applyOnlineQuizAnswer(room, playerId, selectedIdx) {
+  const pending = room.pendingQuiz;
+  if (!pending || pending.playerId !== playerId || pending.answerResult) return;
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) return;
+
+  const idx = Number(selectedIdx);
+  const validIdx = Number.isInteger(idx) && idx >= 0 && idx < pending.quiz.options.length ? idx : 0;
+  const quizRes = BoardConfig.resolveQuizAnswer(player, pending.quiz.id, validIdx);
+  pending.answerResult = quizRes;
+  player.tile = quizRes.endTile;
+  player.shield = quizRes.shieldAfter;
+
+  io.to(room.code).emit('quiz_revealed', {
+    playerId: player.id,
+    quizResult: quizRes
+  });
+
+  if (room.questTimer) clearTimeout(room.questTimer);
+  room.questTimer = setTimeout(() => {
+    if (!rooms.has(room.code)) return;
+    executeOnlineQuizSteps(room);
+  }, 1450);
+}
+
+function scheduleOnlineBotQuiz(room) {
+  if (!room || room.phase !== 'playing' || !room.pendingQuiz) return;
+  const pending = room.pendingQuiz;
+  const player = room.players.find((p) => p.id === pending.playerId);
+  if (!player) return;
+
+  if (room.questTimer) clearTimeout(room.questTimer);
+  room.questTimer = setTimeout(() => {
+    if (!rooms.has(room.code) || !room.pendingQuiz || room.pendingQuiz.answerResult) return;
+    const q = pending.quiz;
+    const isBotCorrect = Math.random() < 0.6;
+    let pick = q.answerIndex;
+    if (!isBotCorrect) {
+      const wrongIndices = [0, 1, 2, 3].filter((i) => i !== q.answerIndex);
+      pick = wrongIndices[Math.floor(Math.random() * wrongIndices.length)];
+    }
+    applyOnlineQuizAnswer(room, player.id, pick);
+  }, 1000);
+}
+
 function scheduleBotIfNeeded(room) {
-  if (room.phase !== 'playing' || room.isTurnResolving) return;
+  if (room.phase !== 'playing' || room.isTurnResolving || room.pendingQuiz) return;
   const active = room.players[room.turnIndex];
   if (!active) return;
   if (active.isBot || !active.connected) {
@@ -118,7 +214,7 @@ function scheduleBotIfNeeded(room) {
 }
 
 function executeTurn(room, playerId) {
-  if (!room || room.phase !== 'playing' || room.isTurnResolving) return;
+  if (!room || room.phase !== 'playing' || room.isTurnResolving || room.pendingQuiz) return;
   const currentPlayer = room.players[room.turnIndex];
   if (!currentPlayer || currentPlayer.id !== playerId) return;
 
@@ -143,28 +239,30 @@ function executeTurn(room, playerId) {
   if (room.turnTimer) clearTimeout(room.turnTimer);
   room.turnTimer = setTimeout(() => {
     if (!rooms.has(room.code)) return;
-    room.isTurnResolving = false;
 
-    if (result.won) {
-      room.phase = 'finished';
-      room.winnerId = currentPlayer.id;
-      io.to(room.code).emit('game_over', {
-        winnerId: currentPlayer.id,
+    const quizObj = result.pendingQuiz || result.pendingQuest;
+    if (quizObj) {
+      room.isTurnResolving = false;
+      room.pendingQuiz = {
+        playerId: currentPlayer.id,
+        tile: currentPlayer.tile,
+        quiz: quizObj,
+        extraTurn: result.extraTurn,
+        answerResult: null
+      };
+      io.to(room.code).emit('quiz_prompt', {
+        playerId: currentPlayer.id,
+        tile: currentPlayer.tile,
+        quiz: quizObj,
         room: serializeRoom(room)
       });
+      if (currentPlayer.isBot || !currentPlayer.connected) {
+        scheduleOnlineBotQuiz(room);
+      }
       return;
     }
 
-    if (!result.extraTurn) {
-      room.turnIndex = (room.turnIndex + 1) % room.players.length;
-    }
-
-    io.to(room.code).emit('turn_ready', {
-      room: serializeRoom(room),
-      extraTurn: result.extraTurn
-    });
-
-    scheduleBotIfNeeded(room);
+    finalizeTurnAfterActions(room, currentPlayer, result.won, result.extraTurn);
   }, animDurationMs);
 }
 
@@ -203,7 +301,11 @@ function removeSocketFromCurrentRoom(socket) {
   io.to(code).emit('room_updated', { room: serializeRoom(room) });
 
   if (room.phase === 'playing') {
-    scheduleBotIfNeeded(room);
+    if (room.pendingQuiz && room.pendingQuiz.playerId === socket.id) {
+      scheduleOnlineBotQuiz(room);
+    } else {
+      scheduleBotIfNeeded(room);
+    }
   }
 }
 
@@ -226,9 +328,11 @@ io.on('connection', (socket) => {
       settings,
       turnIndex: 0,
       isTurnResolving: false,
+      pendingQuiz: null,
       winnerId: null,
       turnTimer: null,
       botTimer: null,
+      questTimer: null,
       cleanupTimer: null,
       players: []
     };
@@ -399,6 +503,7 @@ io.on('connection', (socket) => {
     room.phase = 'playing';
     room.turnIndex = 0;
     room.isTurnResolving = false;
+    room.pendingQuiz = null;
     room.winnerId = null;
 
     for (const p of room.players) {
@@ -415,6 +520,29 @@ io.on('connection', (socket) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room) return;
     executeTurn(room, socket.id);
+  });
+
+  socket.on('quiz_answer', (payload = {}) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
+    applyOnlineQuizAnswer(room, socket.id, payload.selectedIdx);
+  });
+
+  socket.on('quest_choose', (payload = {}) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
+    applyOnlineQuizAnswer(room, socket.id, payload.choiceIdx);
+  });
+
+  socket.on('quiz_execute', () => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
+    if (!room.pendingQuiz.answerResult) return;
+    if (room.questTimer) {
+      clearTimeout(room.questTimer);
+      room.questTimer = null;
+    }
+    executeOnlineQuizSteps(room);
   });
 
   socket.on('send_emote', (payload = {}) => {
@@ -438,6 +566,7 @@ io.on('connection', (socket) => {
     room.phase = 'playing';
     room.turnIndex = 0;
     room.isTurnResolving = false;
+    room.pendingQuiz = null;
     room.winnerId = null;
     for (const p of room.players) {
       p.tile = 0;
@@ -456,6 +585,7 @@ io.on('connection', (socket) => {
     room.phase = 'lobby';
     room.turnIndex = 0;
     room.isTurnResolving = false;
+    room.pendingQuiz = null;
     room.winnerId = null;
     room.players = room.players.filter((p) => p.isBot || p.connected);
     for (const p of room.players) {

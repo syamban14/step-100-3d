@@ -619,7 +619,8 @@ input[type='text']:focus {
 .hud-layer .hud-log-panel,
 .hud-layer .hud-players,
 .hud-layer .turn-dock,
-.hud-layer .emote-bar {
+.hud-layer .emote-bar,
+.hud-layer .hud-card-bar {
   pointer-events: auto;
 }
 
@@ -908,6 +909,196 @@ input[type='text']:focus {
 .victory-actions {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+}
+
+/* HUD Card Inventory Bar */
+.hud-card-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  border-radius: 14px;
+  padding: 6px 10px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.hud-card-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.15s, background 0.15s;
+}
+
+.hud-card-chip:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: #fde047;
+  background: rgba(30, 41, 59, 0.92);
+}
+
+.hud-card-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.hud-card-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: #0f172a;
+}
+
+.tactical-step-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(139, 92, 246, 0.25);
+  border: 1px solid rgba(139, 92, 246, 0.6);
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tactical-step-btns button {
+  background: #8b5cf6;
+  color: #ffffff;
+  border: none;
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tactical-step-btns button:hover {
+  background: #7c3aed;
+}
+
+/* Modal Quest Mystery Tile */
+.quest-card {
+  max-width: 520px;
+  border: 1px solid rgba(168, 85, 247, 0.55);
+  box-shadow: 0 22px 54px rgba(88, 28, 135, 0.48);
+}
+
+.quest-header {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.quest-story {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.quest-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quest-choice-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  font-size: 13.5px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s, background 0.15s, border-color 0.15s;
+}
+
+.quest-choice-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: #c084fc;
+  background: rgba(168, 85, 247, 0.22);
+}
+
+.quest-choice-btn.picked {
+  border-color: #fde047;
+  background: rgba(250, 204, 21, 0.2);
+}
+
+.quest-choice-btn.correct {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.28);
+  color: #ecfdf5;
+  opacity: 1;
+}
+
+.quest-choice-btn.wrong {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.28);
+  color: #fef2f2;
+  opacity: 1;
+}
+
+.quest-choice-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.quest-choice-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #e9d5ff;
+  background: rgba(139, 92, 246, 0.35);
+  padding: 3px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.quest-result {
+  margin-top: 14px;
+}
+
+.quest-reward-box {
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.quest-reward-title {
+  font-size: 17px;
+  font-weight: 800;
+  margin-bottom: 5px;
+}
+
+.quest-reward-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.quest-reward-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
 }
 
