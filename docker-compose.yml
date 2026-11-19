@@ -1,7 +1,7 @@
 services:
-  ular-tangga-3d:
-    image: ghcr.io/syamban14/ular-tangga-3d:latest
-    container_name: ular-tangga-3d-app
+  step-100-3d:
+    image: ghcr.io/syamban14/step-100-3d:latest
+    container_name: step-100-3d-app
     restart: unless-stopped
     ports:
       - "3001:3001"

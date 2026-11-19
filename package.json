@@ -1,5 +1,5 @@
 {
-  "name": "ular-tangga-3d",
+  "name": "step-100-3d",
   "version": "1.0.0",
   "description": "Step 100 3D — Multi-World 3D Board Adventure (Three.js + Node.js + Express + Socket.io) - Hybrid Local/Bot & Multiplayer Online",
   "main": "server.js",
