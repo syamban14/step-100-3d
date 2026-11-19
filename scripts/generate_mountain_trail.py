@@ -513,45 +513,8 @@ def build_cliff_ladders(trail_samples, mats, col):
 
 
 def build_streams_and_landslides(trail_samples, mats, col):
-    """Build 4 cascading turquoise mountain streams and 4 dusty scree landslide chutes that hug the slope cleanly."""
-    # 1. Sungai Jeram (Streams)
-    bm_water = bmesh.new()
-    water_vcols = []
-    c_water_deep = hex_to_rgba("#0ea5e9")
-    c_water_foam = hex_to_rgba("#bae6fd")
-
-    for idx, (from_tile, to_tile) in enumerate(STREAMS.items()):
-        p_start = tile_to_trail_point(from_tile) + Vector((0.0, -0.15, 0.16))
-        p_end = tile_to_trail_point(to_tile) + Vector((0.0, -0.15, 0.14))
-        perp = Vector((-(p_end.y - p_start.y), p_end.x - p_start.x, 0.0))
-        if perp.length < 1e-4:
-            perp = Vector((1.0, 0.0, 0.0))
-        perp.normalize()
-
-        row_span = abs(((from_tile - 1) // 10) - ((to_tile - 1) // 10))
-        segs = 22
-        prev_pair = None
-        for i in range(segs + 1):
-            t = i / float(segs)
-            pt = p_start.lerp(p_end, t)
-            swirl = math.sin(t * math.pi * 2.2 + idx) * 0.65 * math.sin(t * math.pi)
-            pt += perp * swirl
-            pt.y -= math.sin(t * math.pi) * (0.35 + row_span * 0.25)
-            surf_z, _ = sample_surface_height(pt.x, pt.y, trail_samples)
-            pt.z = max(pt.z, surf_z + 0.26) + math.sin(t * math.pi) * 0.18
-            w = 0.30 + 0.08 * math.sin(t * math.pi)
-
-            v_l = bm_water.verts.new(pt - perp * w)
-            v_r = bm_water.verts.new(pt + perp * w)
-            col_w = lerp_color(c_water_deep, c_water_foam, 0.25 + 0.55 * abs(math.sin(t * math.pi * 3.0)))
-            water_vcols.extend([col_w, col_w])
-            if prev_pair is not None:
-                bm_water.faces.new((prev_pair[0], prev_pair[1], v_r, v_l))
-            prev_pair = (v_l, v_r)
-
-    create_mesh_with_vcol("MountainStreams", bm_water, water_vcols, mats["water"], col, flat=True)
-
-    # 2. Jalur Longsoran Tebing (Landslide Chutes)
+    """Build dusty scree landslide chutes (mountain streams are separated into mountain_streams.glb)."""
+    # Jalur Longsoran Tebing (Landslide Chutes; Sungai dipisah ke generate_mountain_streams.py)
     bm_slide = bmesh.new()
     slide_vcols = []
     c_scree_a = hex_to_rgba("#b45309")
@@ -673,8 +636,7 @@ def main():
     build_mountain_terrain(trail_samples, mats, m_col)
     build_winding_trail_bed(trail_samples, mats, m_col)
     build_stepping_stones(mats, m_col)
-    build_cliff_ladders(trail_samples, mats, m_col)
-    build_streams_and_landslides(trail_samples, mats, m_col)
+    # Tangga, Sungai, & Longsoran dipisah ke generate_cliff_ladders.py, generate_mountain_streams.py, & generate_mountain_landslides.py
     setup_studio(studio_col)
 
     total_verts = sum(len(o.data.vertices) for o in m_col.objects if o.type == "MESH")

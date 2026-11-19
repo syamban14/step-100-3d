@@ -61,6 +61,13 @@ class SoundFX {
     this.tone(base, 0.11, 'sine', 0.13, 0, base * 1.25);
   }
 
+  playFootstep(index = 0) {
+    // Dua ketukan langkah sepatu pendaki di tanah/kerikil (tempo 700ms/petak)
+    const pitch = index % 2 === 0 ? 155 : 140;
+    this.tone(pitch, 0.07, 'triangle', 0.12, 0, 75);
+    this.tone(pitch * 0.92, 0.065, 'triangle', 0.095, 0.36, 70);
+  }
+
   playBounceBack() {
     this.tone(320, 0.14, 'triangle', 0.14, 0, 180);
   }

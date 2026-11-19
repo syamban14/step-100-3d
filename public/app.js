@@ -58,7 +58,8 @@ const el = {
   hudRulesBadge: document.getElementById('hud-rules-badge'),
   btnHudBoardStyle: document.getElementById('btn-hud-board-style'),
   btnCamOverview: document.getElementById('btn-cam-overview'),
-  btnCamFollowNow: document.getElementById('btn-cam-follow-now'),
+  btnCamTpp: document.getElementById('btn-cam-tpp'),
+  btnCamFpp: document.getElementById('btn-cam-fpp'),
   btnCamTop: document.getElementById('btn-cam-top'),
   btnToggleAutofollow: document.getElementById('btn-toggle-autofollow'),
   btnHudTheme: document.getElementById('btn-hud-theme'),
@@ -86,6 +87,7 @@ const scene3d = new GameScene3D(el.canvasContainer, el.pawnOverlays);
 const state = {
   mode: null, // 'local' | 'online'
   boardStyle: 'mountain', // 'mountain' | 'classic'
+  cameraMode: 'overview', // 'overview' | 'tpp' | 'fpp' | 'top'
   theme: 'day',
   soundOn: true,
   autoFollow: true,
@@ -164,7 +166,17 @@ function toggleAutoFollow() {
   state.autoFollow = !state.autoFollow;
   scene3d.setAutoFollow(state.autoFollow);
   el.btnToggleAutofollow.classList.toggle('active', state.autoFollow);
-  el.btnToggleAutofollow.textContent = state.autoFollow ? '🎥 Auto-Follow: ON' : '🎥 Auto-Follow: OFF';
+  el.btnToggleAutofollow.textContent = state.autoFollow ? '🎯 Auto-Follow: ON' : '🎯 Auto-Follow: OFF';
+}
+
+function setCameraModeUI(mode, playerId = null) {
+  state.cameraMode = mode;
+  const active = getActivePlayer();
+  scene3d.setCameraMode(mode, playerId || (active ? active.id : null));
+  el.btnCamOverview.classList.toggle('active', mode === 'overview');
+  el.btnCamTpp.classList.toggle('active', mode === 'tpp');
+  el.btnCamFpp.classList.toggle('active', mode === 'fpp');
+  el.btnCamTop.classList.toggle('active', mode === 'top');
 }
 
 function setBoardStyleUI(style) {
@@ -192,12 +204,10 @@ el.btnHomeSound.addEventListener('click', toggleSound);
 el.btnHudSound.addEventListener('click', toggleSound);
 el.btnToggleAutofollow.addEventListener('click', toggleAutoFollow);
 
-el.btnCamOverview.addEventListener('click', () => scene3d.setCameraPreset('overview'));
-el.btnCamTop.addEventListener('click', () => scene3d.setCameraPreset('top'));
-el.btnCamFollowNow.addEventListener('click', () => {
-  const active = getActivePlayer();
-  scene3d.setCameraPreset('follow', active ? active.id : null);
-});
+el.btnCamOverview.addEventListener('click', () => setCameraModeUI('overview'));
+el.btnCamTpp.addEventListener('click', () => setCameraModeUI('tpp'));
+el.btnCamFpp.addEventListener('click', () => setCameraModeUI('fpp'));
+el.btnCamTop.addEventListener('click', () => setCameraModeUI('top'));
 
 // Render Bar Emote Cepat
 function initEmoteBar() {
@@ -668,7 +678,7 @@ function enterMatchView() {
   scene3d.setMysteryVisible(state.room.settings.mysteryTiles);
   const active = getActivePlayer();
   scene3d.syncPlayers(state.room.players, active ? active.id : null, true);
-  scene3d.setCameraPreset('overview');
+  setCameraModeUI('overview');
 
   el.hudModeBadge.textContent = state.mode === 'online' ? `ROOM: ${state.room.code}` : 'MODE LOKAL';
   el.hudRulesBadge.textContent = `${state.room.settings.diceCount} Dadu • Mystery ${
@@ -683,6 +693,7 @@ function enterMatchView() {
 function updateHudState() {
   if (!state.room) return;
   const active = getActivePlayer();
+  scene3d.setActivePlayer(active ? active.id : null);
 
   // Render daftar kartu pemain di kiri
   el.hudPlayers.innerHTML = '';
@@ -746,7 +757,8 @@ async function runTurnAnimation(playerId, result) {
         soundFX.playBounceBack();
       }
       await scene3d.animateHopPath(playerId, step.path, (tile, idx) => {
-        soundFX.playHop(idx);
+        if (state.boardStyle === 'mountain') soundFX.playFootstep(idx);
+        else soundFX.playHop(idx);
         updateHudTileForPlayer(playerId, tile);
       });
     } else if (step.type === 'mystery') {
@@ -759,7 +771,8 @@ async function runTurnAnimation(playerId, result) {
       }
       if (step.path && step.path.length) {
         await scene3d.animateHopPath(playerId, step.path, (tile, idx) => {
-          soundFX.playHop(idx);
+          if (state.boardStyle === 'mountain') soundFX.playFootstep(idx);
+          else soundFX.playHop(idx);
           updateHudTileForPlayer(playerId, tile);
         });
       }
@@ -832,7 +845,7 @@ function showVictoryModal(winnerId) {
 
   soundFX.playWinFanfare();
   scene3d.spawnWinConfetti(100);
-  scene3d.setCameraPreset('follow', winner.id);
+  setCameraModeUI('tpp', winner.id);
 
   el.victoryTitle.textContent = `🏆 ${winner.name} Menang!`;
   el.victorySubtitle.textContent = 'Selamat! Berhasil menaklukkan puncak petak 100!';
@@ -890,6 +903,6 @@ function resetToHome() {
   el.modalVictory.classList.add('hidden');
   scene3d.syncPlayers([], null, true);
   scene3d.setMysteryVisible(true);
-  scene3d.setCameraPreset('overview');
+  setCameraModeUI('overview');
   showScreen('home');
 }

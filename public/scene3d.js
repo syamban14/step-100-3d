@@ -32,9 +32,20 @@ export class GameScene3D {
 
     this.theme = 'day';
     this.boardStyle = 'mountain';
+    this.cameraMode = 'overview'; // 'overview' | 'tpp' | 'fpp' | 'top'
+    this.hikerTemplate = null;
     this.autoFollow = true;
     this.userDragging = false;
+    this.povDragging = false;
+    this.lastPointer = { x: 0, y: 0 };
+    this.fppYawOffset = 0;
+    this.fppPitchOffset = 0;
+    this.climbOrSlidePitch = 0;
+    this.isPawnMoving = false;
+    this.activePlayerId = null;
     this.cameraPresetLockUntil = 0;
+    this.tppRaycaster = new THREE.Raycaster();
+    this.tppColliders = [];
 
     this.pawns = new Map();
     this.pawnTargets = new Map();
@@ -47,6 +58,7 @@ export class GameScene3D {
     this.snakeCurves = new Map();
     this.ladderPaths = new Map();
     this.mountainLadderCurves = new Map();
+    this.mountainLadderYaws = new Map();
     this.mountainHazardCurves = new Map();
     this.torchLights = [];
     this.torchFlames = [];
@@ -122,6 +134,25 @@ export class GameScene3D {
     });
     this.controls.addEventListener('end', () => {
       this.userDragging = false;
+    });
+
+    const dom = this.renderer.domElement;
+    dom.addEventListener('pointerdown', (e) => {
+      if (this.cameraMode === 'fpp' || this.cameraMode === 'tpp') {
+        this.povDragging = true;
+        this.lastPointer = { x: e.clientX, y: e.clientY };
+      }
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (!this.povDragging || (this.cameraMode !== 'fpp' && this.cameraMode !== 'tpp')) return;
+      const dx = e.clientX - this.lastPointer.x;
+      const dy = e.clientY - this.lastPointer.y;
+      this.lastPointer = { x: e.clientX, y: e.clientY };
+      this.fppYawOffset = THREE.MathUtils.clamp(this.fppYawOffset - dx * 0.006, -1.65, 1.65);
+      this.fppPitchOffset = THREE.MathUtils.clamp(this.fppPitchOffset - dy * 0.005, -0.65, 0.75);
+    });
+    window.addEventListener('pointerup', () => {
+      this.povDragging = false;
     });
   }
 
@@ -741,6 +772,18 @@ export class GameScene3D {
     return tex;
   }
 
+  registerTppColliders(gltfScene) {
+    gltfScene.traverse((child) => {
+      if (child.isMesh) {
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach((m) => {
+          if (m) m.side = THREE.DoubleSide;
+        });
+        this.tppColliders.push(child);
+      }
+    });
+  }
+
   prepareLoadedGltf(gltfScene) {
     gltfScene.traverse((child) => {
       if (child.isMesh) {
@@ -790,61 +833,400 @@ export class GameScene3D {
       this.mountainGroup.add(disc);
     }
 
-    // Kurva panjat tangga & meluncur sungai/longsor yang presisi mengikuti lereng gunung
-    Object.entries(BoardConfig.LADDERS).forEach(([fromStr, toTile]) => {
-      const fromTile = Number(fromStr);
-      const p0 = BoardConfig.tileToMountainWorld(fromTile);
-      const p1 = BoardConfig.tileToMountainWorld(toTile);
-      const fromRow = Math.floor((fromTile - 1) / 10);
-      const toRow = Math.floor((toTile - 1) / 10);
-      const archOut = 0.35 + Math.abs(toRow - fromRow) * 0.28;
-
-      const pts = [];
-      for (let i = 0; i <= 6; i++) {
-        const t = i / 6;
-        const pt = new THREE.Vector3(
-          THREE.MathUtils.lerp(p0.x, p1.x, t),
-          THREE.MathUtils.lerp(p0.y, p1.y, t) + Math.sin(t * Math.PI) * 0.45,
-          THREE.MathUtils.lerp(p0.z, p1.z, t) + Math.sin(t * Math.PI) * archOut * 0.85
-        );
-        pts.push(pt);
+    // Kurva panjat tangga 1:1 mengikuti posisi anak tangga tinggi di cliff_ladders.glb
+    const MOUNTAIN_LADDER_DATA = {
+      4: {
+        yaw: 2.63338,
+        points: [
+          [-3.4, 0.9907, 12.8944],
+          [-3.365, 0.9863, 12.5841],
+          [-3.1376, 2.5088, 12.1758],
+          [-2.9213, 3.2361, 11.7876],
+          [-2.7008, 3.9761, 11.3918],
+          [-2.413, 4.2896, 10.875],
+          [-2.1956, 4.2787, 10.4848],
+          [-1.975, 4.2674, 10.0887],
+          [-1.7122, 4.0345, 9.617],
+          [-1.496, 3.6966, 9.2287],
+          [-1.2797, 3.3587, 8.8405],
+          [-1.0634, 3.0208, 8.4522],
+          [-0.9956, 2.9176, 8.0829]
+        ]
+      },
+      13: {
+        yaw: -2.40431,
+        points: [
+          [5.3222, 1.8238, 10.3144],
+          [5.271, 1.8215, 9.9956],
+          [4.8552, 4.3127, 9.5377],
+          [4.3561, 5.3418, 8.9882],
+          [3.9436, 5.4904, 8.5339],
+          [3.531, 5.6391, 8.0796],
+          [3.1185, 5.7878, 7.6254],
+          [2.6864, 5.8902, 7.1495],
+          [2.2692, 5.9231, 6.6902],
+          [1.8043, 5.8811, 6.1782],
+          [1.3677, 5.4047, 5.6975],
+          [0.9552, 4.9489, 5.2432],
+          [0.8578, 4.8444, 4.8736]
+        ]
+      },
+      33: {
+        yaw: 2.63495,
+        points: [
+          [4.6333, 3.6638, 6.2101],
+          [4.6824, 3.7506, 5.8547],
+          [4.7973, 3.989, 5.6477],
+          [4.9122, 4.2273, 5.4406],
+          [5.0271, 4.4657, 5.2335],
+          [5.142, 4.704, 5.0265],
+          [5.2569, 4.9424, 4.8194],
+          [5.3902, 5.2098, 4.5793],
+          [5.539, 5.2633, 4.3112],
+          [5.6644, 5.2767, 4.0851],
+          [5.7794, 5.2745, 3.878],
+          [5.9137, 5.2402, 3.6359],
+          [6.0044, 5.1051, 3.2054]
+        ]
+      },
+      42: {
+        yaw: 2.36112,
+        points: [
+          [-6.0044, 4.4969, 3.3437],
+          [-5.9626, 4.4753, 3.0212],
+          [-5.7431, 6.2584, 2.7995],
+          [-5.5362, 6.8478, 2.5906],
+          [-5.3293, 7.4371, 2.3817],
+          [-5.0981, 8.0638, 2.1481],
+          [-4.8022, 8.1217, 1.8493],
+          [-4.5953, 8.1217, 1.6404],
+          [-4.3822, 8.1142, 1.4252],
+          [-4.1163, 8.0742, 1.1566],
+          [-3.8542, 7.3501, 0.8919],
+          [-3.6473, 6.4391, 0.683],
+          [-3.6, 6.4238, 0.355]
+        ]
+      },
+      50: {
+        yaw: -2.29451,
+        points: [
+          [7.72, 5.192, 2.9817],
+          [7.6755, 5.1718, 2.6546],
+          [7.4238, 6.955, 2.4322],
+          [7.1583, 7.3942, 2.1975],
+          [6.8566, 7.4897, 1.931],
+          [6.6186, 7.5048, 1.7207],
+          [6.3849, 7.5178, 1.5141],
+          [6.1526, 7.529, 1.3089],
+          [5.9154, 7.5347, 1.0993],
+          [5.6154, 7.4205, 0.8342],
+          [5.3831, 7.2407, 0.6289],
+          [5.1509, 7.0608, 0.4237],
+          [5.04, 6.9451, 0.0379]
+        ]
+      },
+      62: {
+        yaw: -3.08062,
+        points: [
+          [-5.04, 6.3369, -0.3897],
+          [-5.0422, 6.3103, -0.6903],
+          [-5.06, 8.7572, -0.9812],
+          [-5.0779, 9.753, -1.2747],
+          [-5.1048, 10.0327, -1.7161],
+          [-5.1222, 10.0439, -2.0007],
+          [-5.1397, 10.054, -2.2868],
+          [-5.157, 10.0627, -2.5714],
+          [-5.1779, 10.0638, -2.9135],
+          [-5.2022, 9.5397, -3.3119],
+          [-5.2197, 8.8273, -3.5974],
+          [-5.237, 8.1171, -3.8819],
+          [-5.24, 8.09, -4.195]
+        ]
+      },
+      74: {
+        yaw: 2.7702,
+        points: [
+          [1.9533, 7.4307, -1.8735],
+          [1.9739, 7.4085, -2.1789],
+          [2.1239, 10.2291, -2.5642],
+          [2.33, 10.7996, -3.0932],
+          [2.477, 10.8164, -3.4708],
+          [2.6241, 10.8309, -3.8484],
+          [2.8087, 10.6793, -4.3225],
+          [2.9557, 10.4175, -4.6998],
+          [3.1026, 10.1558, -5.077],
+          [3.2495, 9.8941, -5.4542],
+          [3.4033, 9.6136, -5.8491],
+          [3.5548, 9.1818, -6.2382],
+          [3.5933, 9.0969, -6.5897]
+        ]
+      },
+      84: {
+        yaw: 3.00148,
+        points: [
+          [-1.7467, 8.3507, -4.205],
+          [-1.7466, 8.3388, -4.5083],
+          [-1.7294, 8.8711, -4.6304],
+          [-1.7137, 9.1476, -4.7416],
+          [-1.698, 9.4241, -4.8528],
+          [-1.6823, 9.7005, -4.964],
+          [-1.6597, 10.0458, -5.1242],
+          [-1.6126, 9.9701, -5.458],
+          [-1.597, 9.8865, -5.5692],
+          [-1.5813, 9.8029, -5.6804],
+          [-1.5656, 9.7193, -5.7916],
+          [-1.5499, 9.6357, -5.9028],
+          [-1.54, 9.5313, -6.2757]
+        ]
       }
+    };
+
+    Object.entries(MOUNTAIN_LADDER_DATA).forEach(([fromStr, data]) => {
+      const fromTile = Number(fromStr);
+      const pts = data.points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
       this.mountainLadderCurves.set(fromTile, new THREE.CatmullRomCurve3(pts));
+      this.mountainLadderYaws.set(fromTile, data.yaw);
     });
 
-    Object.entries(BoardConfig.SNAKES).forEach(([fromStr, toTile], idx) => {
+    // Kurva hanyut sungai 1:1 mengikuti permukaan air mountain_streams.glb
+    const MOUNTAIN_STREAM_DATA = {
+      27: [
+        [2.9867, 3.0913, 8.6382],
+        [2.8608, 3.0813, 9.0982],
+        [2.7551, 3.057, 9.2442],
+        [2.6191, 3.0179, 9.3605],
+        [2.4872, 2.1609, 9.4411],
+        [2.3525, 1.9041, 9.5166],
+        [2.2194, 1.8492, 9.621],
+        [2.1073, 1.8445, 9.7798],
+        [2.1104, 1.8441, 10.0282],
+        [2.1999, 1.8441, 10.2526],
+        [2.3276, 1.8442, 10.43],
+        [2.1384, 1.8459, 10.6071],
+        [1.9214, 1.8541, 10.7485],
+        [1.6754, 1.9338, 10.8476],
+        [1.4008, 1.9316, 10.9454],
+        [1.1605, 1.8909, 11.084],
+        [0.9834, 1.7849, 11.2322],
+        [0.8043, 1.2778, 11.3982],
+        [0.6013, 1.1256, 11.5801],
+        [0.3692, 1.1087, 11.7597],
+        [0.1197, 1.099, 11.9197],
+        [-0.1257, 1.091, 12.0539],
+        [-0.3508, 1.0828, 12.1654],
+        [-0.5595, 1.073, 12.256],
+        [-0.7722, 1.0691, 12.3274],
+        [-1.0075, 1.0676, 12.3922],
+        [-1.1333, 1.0776, 12.8522]
+      ],
+      40: [
+        [-8.34, 4.272, 5.4844],
+        [-8.2743, 4.262, 5.9444],
+        [-8.0329, 4.2297, 6.1907],
+        [-7.974, 4.2099, 6.4066],
+        [-7.9489, 3.4812, 6.5861],
+        [-7.9129, 2.6868, 6.8002],
+        [-7.8401, 2.5134, 7.0272],
+        [-7.7823, 2.5052, 7.2806],
+        [-7.9264, 2.5035, 7.5672],
+        [-8.2106, 2.5038, 7.7892],
+        [-8.0894, 2.5085, 8.1087],
+        [-7.8314, 2.5847, 8.3802],
+        [-7.5671, 2.6127, 8.6584],
+        [-7.2601, 2.6215, 8.8682],
+        [-6.9366, 2.3927, 9.057],
+        [-6.6456, 2.2979, 9.2979],
+        [-6.3919, 2.2017, 9.5692],
+        [-6.1542, 2.1935, 9.8552],
+        [-6.3489, 2.1917, 10.1123],
+        [-6.5553, 2.1935, 10.3971],
+        [-6.4856, 2.2017, 10.6978],
+        [-6.3397, 2.2517, 10.9365],
+        [-6.2131, 2.2247, 11.1823],
+        [-6.1036, 1.1646, 11.4604],
+        [-5.9541, 0.8778, 11.7358],
+        [-5.7324, 0.8938, 11.844],
+        [-5.6667, 0.9038, 12.304]
+      ],
+      66: [
+        [0.72, 6.6844, 0.0016],
+        [0.6631, 6.6744, 0.4616],
+        [0.5821, 6.641, 0.6231],
+        [0.4468, 6.6255, 0.7779],
+        [0.3208, 6.6171, 0.9714],
+        [0.2262, 6.6081, 1.1841],
+        [0.1601, 6.5738, 1.382],
+        [0.1031, 6.0124, 1.5291],
+        [0.0703, 5.7924, 1.6346],
+        [0.0512, 5.7153, 1.785],
+        [0.0013, 5.671, 1.9579],
+        [-0.0647, 5.6161, 2.1307],
+        [-0.1167, 5.6114, 2.3126],
+        [-0.1029, 5.611, 2.5077],
+        [0.0018, 5.611, 2.6662],
+        [0.1021, 5.611, 2.8336],
+        [0.1244, 5.6114, 3.0252],
+        [0.0465, 5.6161, 3.1897],
+        [-0.0523, 5.671, 3.3343],
+        [-0.1706, 5.704, 3.463],
+        [-0.3215, 5.7042, 3.5819],
+        [-0.4934, 5.6766, 3.7333],
+        [-0.6262, 4.9549, 3.9277],
+        [-0.715, 4.7427, 4.0717],
+        [-0.7994, 4.7322, 4.1574],
+        [-0.8009, 4.7476, 4.2753],
+        [-0.8578, 4.7576, 4.7353]
+      ],
+      89: [
+        [4.0756, 8.7851, -4.1945],
+        [4.0715, 8.7751, -3.7345],
+        [3.8993, 8.73, -3.464],
+        [3.8966, 8.7198, -3.2371],
+        [3.8728, 8.7418, -3.0758],
+        [3.8745, 8.7793, -2.9288],
+        [3.8982, 8.1782, -2.7585],
+        [3.8904, 7.4313, -2.5581],
+        [3.853, 7.2003, -2.3559],
+        [3.8299, 7.1921, -2.1393],
+        [3.8575, 7.1904, -1.8862],
+        [3.9177, 7.1904, -1.6409],
+        [3.9557, 7.1921, -1.3668],
+        [4.0554, 7.2003, -1.1234],
+        [4.1738, 7.2659, -0.9001],
+        [4.2772, 6.9172, -0.6706],
+        [4.3664, 6.7967, -0.4263],
+        [4.3458, 6.7921, -0.1525],
+        [4.319, 6.7917, 0.1148],
+        [4.3033, 6.7921, 0.3725],
+        [4.2465, 6.7967, 0.5409],
+        [4.1806, 6.8517, 0.6679],
+        [4.1227, 6.855, 0.7888],
+        [4.0872, 5.7844, 0.9174],
+        [4.0569, 5.4937, 1.0743],
+        [3.9485, 5.4938, 1.1352],
+        [3.9444, 5.5038, 1.5952]
+      ]
+    };
+
+    // Kurva luncuran longsor 1:1 mengikuti alur tanah/batu mountain_landslides.glb
+    const MOUNTAIN_LANDSLIDE_DATA = {
+      43: [
+        [-4.2889, 4.5838, 3.5995],
+        [-4.3125, 4.5638, 4.0595],
+        [-4.1111, 4.5565, 4.3224],
+        [-3.9161, 4.5753, 4.6107],
+        [-3.8127, 4.3325, 4.9083],
+        [-3.746, 4.0298, 5.2067],
+        [-3.6428, 4.0298, 5.5167],
+        [-3.7073, 4.0298, 5.8412],
+        [-3.7201, 4.0298, 6.1532],
+        [-3.7652, 4.0298, 6.4323],
+        [-3.8197, 3.982, 6.6868],
+        [-3.9246, 3.8976, 6.9322],
+        [-3.9871, 3.0486, 7.197],
+        [-3.985, 2.7799, 7.4398],
+        [-4.0067, 2.7622, 7.7023],
+        [-4.0175, 2.7622, 8.0114],
+        [-3.9068, 2.7622, 8.3003],
+        [-3.9467, 2.7622, 8.6047],
+        [-4.1594, 2.7343, 8.8597],
+        [-4.3681, 2.6825, 9.1176],
+        [-4.5551, 2.5132, 9.415],
+        [-4.7784, 2.2535, 9.7067],
+        [-5.0171, 2.202, 9.9813],
+        [-5.2986, 2.2382, 10.0585],
+        [-5.3222, 2.2582, 10.5185]
+      ],
+      54: [
+        [2.3667, 5.5907, 1.9478],
+        [2.5129, 5.5707, 2.4078],
+        [2.8464, 5.5289, 2.6025],
+        [3.1396, 5.5168, 2.6235],
+        [3.445, 5.5174, 2.6343],
+        [3.7747, 5.5237, 2.6483],
+        [4.1222, 5.3146, 2.6827],
+        [4.427, 5.0561, 2.7873],
+        [4.692, 5.0184, 2.9282],
+        [4.9895, 5.0367, 3.0418],
+        [5.2373, 5.0367, 3.2264],
+        [5.1431, 5.0367, 3.5234],
+        [5.0439, 5.0367, 3.7917],
+        [5.3172, 5.0367, 3.8989],
+        [5.6041, 5.0327, 3.9448],
+        [5.8906, 5.0423, 4.0219],
+        [6.2129, 5.0859, 4.1319],
+        [6.5614, 4.4479, 4.1727],
+        [6.854, 3.6686, 4.1843],
+        [7.1181, 3.4957, 4.1868],
+        [7.3692, 3.4673, 4.1728],
+        [7.6267, 3.4539, 4.1394],
+        [7.9065, 3.4519, 4.0948],
+        [8.1937, 3.47, 4.1356],
+        [8.34, 3.49, 4.5956]
+      ],
+      76: [
+        [-0.6511, 7.6044, -2.0622],
+        [-0.7532, 7.5844, -1.6022],
+        [-1.0845, 7.5851, -1.5105],
+        [-1.2569, 7.5964, -1.3172],
+        [-1.4044, 7.6073, -1.1958],
+        [-1.53, 7.6129, -1.0947],
+        [-1.6356, 7.6241, -0.9763],
+        [-1.7396, 7.6093, -0.8238],
+        [-1.8653, 7.5647, -0.6411],
+        [-2.0258, 7.0949, -0.4479],
+        [-2.2125, 6.5771, -0.2939],
+        [-2.3674, 6.4584, -0.2028],
+        [-2.5287, 6.4406, -0.1272],
+        [-2.6979, 6.4422, -0.0095],
+        [-2.8499, 6.4422, 0.1401],
+        [-2.9641, 6.4422, 0.3254],
+        [-2.88, 6.4422, 0.5065],
+        [-2.877, 6.4422, 0.7318],
+        [-2.9654, 6.4422, 0.9313],
+        [-3.1326, 6.4422, 1.0558],
+        [-3.3272, 6.3976, 1.1331],
+        [-3.5529, 6.3811, 1.1981],
+        [-3.7775, 6.0015, 1.2984],
+        [-3.8424, 5.9182, 1.4541],
+        [-3.9444, 5.9382, 1.9141]
+      ],
+      99: [
+        [-3.5933, 9.7051, -6.1896],
+        [-3.6574, 9.6851, -5.7296],
+        [-3.9049, 9.7364, -5.4307],
+        [-4.1736, 9.9021, -5.1289],
+        [-4.3492, 8.5279, -4.7833],
+        [-4.5313, 8.1084, -4.4226],
+        [-4.6763, 8.1084, -3.9559],
+        [-4.8286, 8.1084, -3.4224],
+        [-4.9334, 7.8836, -2.8895],
+        [-5.1545, 7.8836, -2.3906],
+        [-5.4269, 7.8836, -1.9686],
+        [-5.4772, 7.8637, -1.705],
+        [-5.4879, 7.0309, -1.4769],
+        [-5.5367, 6.2684, -1.2426],
+        [-5.7013, 6.2684, -0.8649],
+        [-5.9632, 6.2684, -0.3844],
+        [-6.0277, 6.173, 0.1658],
+        [-6.2255, 6.0436, 0.6809],
+        [-6.2924, 6.0436, 1.1996],
+        [-6.507, 6.0436, 1.6067],
+        [-6.817, 6.0677, 1.8933],
+        [-7.1765, 5.3773, 2.1492],
+        [-7.5099, 4.5434, 2.439],
+        [-7.656, 4.39, 2.7983],
+        [-7.72, 4.41, 3.2583]
+      ]
+    };
+
+    Object.entries(BoardConfig.SNAKES).forEach(([fromStr, toTile]) => {
       const fromTile = Number(fromStr);
-      const p0 = BoardConfig.tileToMountainWorld(fromTile);
-      const p1 = BoardConfig.tileToMountainWorld(toTile);
-      const isStream = Boolean(BoardConfig.STREAMS[fromTile]);
-      const streamIdx = Object.keys(BoardConfig.STREAMS).map(Number).indexOf(fromTile);
-      const slideIdx = Object.keys(BoardConfig.LANDSLIDES).map(Number).indexOf(fromTile);
-      const fromRow = Math.floor((fromTile - 1) / 10);
-      const toRow = Math.floor((toTile - 1) / 10);
-      const rowSpan = Math.abs(fromRow - toRow);
-
-      // Hitung vektor tegak lurus di bidang horizontal (Blender XY -> Three XZ)
-      const dx = p1.x - p0.x;
-      const dz = p1.z - p0.z;
-      const perp = new THREE.Vector3(dz, 0, -dx);
-      if (perp.lengthSq() < 0.001) perp.set(1, 0, 0);
-      perp.normalize();
-
-      const pts = [];
-      for (let i = 0; i <= 8; i++) {
-        const t = i / 8;
-        const swirl = isStream
-          ? Math.sin(t * Math.PI * 2.2 + Math.max(0, streamIdx)) * 0.65 * Math.sin(t * Math.PI)
-          : Math.sin(t * Math.PI * 1.8 - Math.max(0, slideIdx)) * 0.55 * Math.sin(t * Math.PI);
-
-        const pt = new THREE.Vector3(
-          THREE.MathUtils.lerp(p0.x, p1.x, t) + perp.x * swirl,
-          THREE.MathUtils.lerp(p0.y, p1.y, t) + Math.sin(t * Math.PI) * 0.65 + 0.16,
-          THREE.MathUtils.lerp(p0.z, p1.z, t) + perp.z * swirl + Math.sin(t * Math.PI) * (0.35 + rowSpan * 0.25)
-        );
-        pts.push(pt);
+      const rawPts = MOUNTAIN_STREAM_DATA[fromTile] || MOUNTAIN_LANDSLIDE_DATA[fromTile];
+      if (rawPts) {
+        const sPts = rawPts.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+        this.mountainHazardCurves.set(fromTile, new THREE.CatmullRomCurve3(sPts));
       }
-      this.mountainHazardCurves.set(fromTile, new THREE.CatmullRomCurve3(pts));
     });
 
     // Lampu Mode Malam untuk Api Unggun Basecamp & 8 Lentera Jalur
@@ -862,13 +1244,26 @@ export class GameScene3D {
       this.mountainLights.push(lLight);
     });
 
-    // Muat aset GLB Blender (gunung + jalur + hutan + basecamp + puncak + peti mystery)
+    // Muat aset GLB Blender (gunung + jalur + tangga tebing + hutan + basecamp + puncak + peti mystery)
     const loader = new GLTFLoader();
     loader.load('./assets/models/mountain_trail.glb', (gltf) => {
+      const root = this.prepareLoadedGltf(gltf.scene);
+      this.registerTppColliders(root);
+      this.mountainGroup.add(root);
+    });
+    loader.load('./assets/models/cliff_ladders.glb', (gltf) => {
+      this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
+    });
+    loader.load('./assets/models/mountain_streams.glb', (gltf) => {
+      this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
+    });
+    loader.load('./assets/models/mountain_landslides.glb', (gltf) => {
       this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
     });
     loader.load('./assets/models/mountain_scenery.glb', (gltf) => {
-      this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
+      const root = this.prepareLoadedGltf(gltf.scene);
+      this.registerTppColliders(root);
+      this.mountainGroup.add(root);
     });
     loader.load('./assets/models/summit_set.glb', (gltf) => {
       const root = this.prepareLoadedGltf(gltf.scene);
@@ -900,6 +1295,11 @@ export class GameScene3D {
         this.mountainMysteryMeshes.push(wrapper);
         this.mountainGroup.add(wrapper);
       });
+    });
+
+    loader.load('./assets/models/hiker_human.glb', (gltf) => {
+      this.hikerTemplate = this.prepareLoadedGltf(gltf.scene);
+      this.upgradePawnsWithHikerModel();
     });
   }
 
@@ -1019,8 +1419,8 @@ export class GameScene3D {
       this.diceMeshes[1].visible = false;
     }
 
-    // Arahkan fokus sementara ke area dadu jika autoFollow aktif
-    if (this.autoFollow && !this.userDragging) {
+    // Arahkan fokus sementara ke area dadu jika autoFollow aktif (kecuali saat POV TPP/FPP)
+    if (this.autoFollow && !this.userDragging && this.cameraMode !== 'fpp' && this.cameraMode !== 'tpp') {
       this.desiredTarget.set(0, baseY + 0.5, landingZ);
     }
 
@@ -1066,25 +1466,149 @@ export class GameScene3D {
     });
   }
 
-  createPawnMesh(characterId, playerIndex) {
+  tintHikerMaterial(mat, charInfo) {
+    const cloned = mat.clone();
+    if (mat.name === 'JacketMat') {
+      cloned.color.set(charInfo.color);
+    } else if (mat.name === 'AccentMat') {
+      cloned.color.set(charInfo.accent);
+    }
+    return cloned;
+  }
+
+  populatePawnVisual(root, characterId) {
+    const holder = root.userData.visualHolder;
+    if (!holder) return;
+    while (holder.children.length > 0) {
+      holder.remove(holder.children[0]);
+    }
+
     const charInfo =
       BoardConfig.CHARACTERS.find((c) => c.id === characterId) || BoardConfig.CHARACTERS[0];
 
+    if (this.hikerTemplate) {
+      const clone = this.hikerTemplate.clone(true);
+      clone.scale.setScalar(0.92);
+      clone.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          if (Array.isArray(child.material)) {
+            child.material = child.material.map((m) => this.tintHikerMaterial(m, charInfo));
+          } else if (child.material) {
+            child.material = this.tintHikerMaterial(child.material, charInfo);
+          }
+        }
+      });
+
+      ['explorer', 'knight', 'mecha', 'neko'].forEach((cid) => {
+        const hat = clone.getObjectByName(`Hat_${cid}`);
+        if (hat) hat.visible = cid === characterId;
+      });
+
+      holder.add(clone);
+      root.userData.rig = {
+        bodyGroup: clone,
+        armL: clone.getObjectByName('ArmL'),
+        armR: clone.getObjectByName('ArmR'),
+        legL: clone.getObjectByName('LegL'),
+        legR: clone.getObjectByName('LegR'),
+        head: clone.getObjectByName('HikerHead')
+      };
+      return;
+    }
+
+    // Fallback manusia low-poly sementara sebelum GLB selesai dimuat
+    const fallbackGroup = new THREE.Group();
+    const mainMat = new THREE.MeshStandardMaterial({ color: charInfo.color, roughness: 0.55 });
+    const accentMat = new THREE.MeshStandardMaterial({ color: charInfo.accent, roughness: 0.45 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.8 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: '#f5cba7', roughness: 0.68 });
+
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.46, 0.22), mainMat);
+    torso.position.y = 0.82;
+    torso.castShadow = true;
+    fallbackGroup.add(torso);
+
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 10), skinMat);
+    head.position.y = 1.24;
+    head.castShadow = true;
+    fallbackGroup.add(head);
+
+    const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.22, 0.14, 10), accentMat);
+    hat.position.y = 1.38;
+    fallbackGroup.add(hat);
+
+    const makeLimb = (w, h, d, mat, x, y) => {
+      const piv = new THREE.Group();
+      piv.position.set(x, y, 0);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.y = -h / 2;
+      m.castShadow = true;
+      piv.add(m);
+      fallbackGroup.add(piv);
+      return piv;
+    };
+
+    const armL = makeLimb(0.1, 0.42, 0.1, mainMat, 0.23, 1.02);
+    const armR = makeLimb(0.1, 0.42, 0.1, mainMat, -0.23, 1.02);
+    const legL = makeLimb(0.12, 0.54, 0.14, pantsMat, 0.1, 0.58);
+    const legR = makeLimb(0.12, 0.54, 0.14, pantsMat, -0.1, 0.58);
+
+    holder.add(fallbackGroup);
+    root.userData.rig = { bodyGroup: fallbackGroup, armL, armR, legL, legR, head };
+  }
+
+  upgradePawnsWithHikerModel() {
+    this.pawns.forEach((mesh, pid) => {
+      const meta = this.pawnMeta.get(pid);
+      const charId = meta ? meta.characterId : mesh.userData.characterId;
+      this.populatePawnVisual(mesh, charId || 'explorer');
+    });
+  }
+
+  applyPawnRigPose(mesh, pose = {}) {
+    const rig = mesh?.userData?.rig;
+    if (!rig) return;
+
+    const legSwing = pose.legSwing || 0;
+    const armSwing = pose.armSwing || 0;
+    const armRaise = pose.armRaise || 0;
+    const torsoLean = pose.torsoLean || 0;
+    const bobY = pose.bobY || 0;
+    const climbPhase = pose.climbPhase ?? null;
+
+    if (rig.bodyGroup) {
+      rig.bodyGroup.position.y = bobY;
+      rig.bodyGroup.rotation.x = torsoLean;
+    }
+
+    if (climbPhase !== null) {
+      if (rig.armL) rig.armL.rotation.x = -1.75 + Math.sin(climbPhase) * 0.65;
+      if (rig.armR) rig.armR.rotation.x = -1.75 - Math.sin(climbPhase) * 0.65;
+      if (rig.legL) rig.legL.rotation.x = -0.35 - Math.sin(climbPhase) * 0.55;
+      if (rig.legR) rig.legR.rotation.x = -0.35 + Math.sin(climbPhase) * 0.55;
+      return;
+    }
+
+    if (armRaise) {
+      if (rig.armL) rig.armL.rotation.x = -armRaise;
+      if (rig.armR) rig.armR.rotation.x = -armRaise;
+    } else {
+      if (rig.armL) rig.armL.rotation.x = -armSwing;
+      if (rig.armR) rig.armR.rotation.x = armSwing;
+    }
+
+    if (rig.legL) rig.legL.rotation.x = legSwing;
+    if (rig.legR) rig.legR.rotation.x = -legSwing;
+  }
+
+  createPawnMesh(characterId, playerIndex) {
     const root = new THREE.Group();
-    const mainMat = new THREE.MeshStandardMaterial({ color: charInfo.color, roughness: 0.45 });
-    const accentMat = new THREE.MeshStandardMaterial({ color: charInfo.accent, roughness: 0.35 });
-    const skinMat = new THREE.MeshStandardMaterial({ color: '#ffdfc4', roughness: 0.65 });
-    const darkMat = new THREE.MeshStandardMaterial({ color: '#1e272e', roughness: 0.5 });
 
-    // Alas pion
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.52, 0.16, 16), accentMat);
-    base.position.y = 0.08;
-    base.castShadow = true;
-    root.add(base);
-
-    // Cincin giliran aktif di bawah pion
+    // Cincin giliran aktif di bawah kaki karakter
     const activeRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.56, 0.72, 24),
+      new THREE.RingGeometry(0.46, 0.62, 24),
       new THREE.MeshBasicMaterial({ color: '#fef08a', side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
     );
     activeRing.rotation.x = -Math.PI / 2;
@@ -1093,83 +1617,14 @@ export class GameScene3D {
     root.add(activeRing);
     root.userData.activeRing = activeRing;
 
-    // Tubuh utama
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.36, 0.75, 12), mainMat);
-    body.position.y = 0.52;
-    body.castShadow = true;
-    root.add(body);
+    const visualHolder = new THREE.Group();
+    root.add(visualHolder);
+    root.userData.visualHolder = visualHolder;
+    this.populatePawnVisual(root, characterId);
 
-    // Kepala
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.28, 12, 12),
-      characterId === 'mecha' || characterId === 'neko' ? mainMat : skinMat
-    );
-    head.position.y = 1.08;
-    head.castShadow = true;
-    root.add(head);
-
-    // Mata sederhana
-    const eyeMat = new THREE.MeshBasicMaterial({ color: '#111827' });
-    [-0.1, 0.1].forEach((ex) => {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.042, 6, 6), eyeMat);
-      eye.position.set(ex, 1.1, 0.25);
-      root.add(eye);
-    });
-
-    // Detail spesifik tiap karakter
-    if (characterId === 'explorer') {
-      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 0.06, 14), accentMat);
-      brim.position.y = 1.28;
-      root.add(brim);
-      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.24, 12), mainMat);
-      crown.position.y = 1.42;
-      root.add(crown);
-      const pack = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.42, 0.22), accentMat);
-      pack.position.set(0, 0.62, -0.32);
-      root.add(pack);
-    } else if (characterId === 'knight') {
-      const helm = new THREE.Mesh(new THREE.SphereGeometry(0.31, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.65), accentMat);
-      helm.position.y = 1.11;
-      root.add(helm);
-      const plume = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.26, 0.34), mainMat);
-      plume.position.set(0, 1.46, -0.02);
-      root.add(plume);
-      const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.16, 0.08, 6), accentMat);
-      shield.rotation.z = Math.PI / 2;
-      shield.position.set(-0.36, 0.62, 0.08);
-      root.add(shield);
-    } else if (characterId === 'mecha') {
-      const visor = new THREE.Mesh(
-        new THREE.BoxGeometry(0.36, 0.11, 0.12),
-        new THREE.MeshBasicMaterial({ color: '#38bdf8' })
-      );
-      visor.position.set(0, 1.1, 0.24);
-      root.add(visor);
-      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.28, 6), darkMat);
-      stem.position.y = 1.46;
-      root.add(stem);
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.07, 8, 8),
-        new THREE.MeshBasicMaterial({ color: '#ef4444' })
-      );
-      bulb.position.y = 1.62;
-      root.add(bulb);
-    } else if (characterId === 'neko') {
-      [-0.17, 0.17].forEach((ex, idx) => {
-        const ear = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.24, 4), mainMat);
-        ear.position.set(ex, 1.38, 0);
-        ear.rotation.z = idx === 0 ? 0.25 : -0.25;
-        root.add(ear);
-      });
-      const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.5, 6), accentMat);
-      tail.position.set(0, 0.45, -0.35);
-      tail.rotation.x = -0.8;
-      root.add(tail);
-    }
-
-    // Aura Tameng Anti-Ular
+    // Aura Tameng Anti-Ular / Pelindung
     const shieldAura = new THREE.Mesh(
-      new THREE.SphereGeometry(0.75, 16, 12),
+      new THREE.SphereGeometry(0.76, 16, 12),
       new THREE.MeshBasicMaterial({
         color: '#22d3ee',
         transparent: true,
@@ -1257,9 +1712,11 @@ export class GameScene3D {
         const mesh = this.pawns.get(p.id);
         if (mesh) {
           mesh.position.copy(this.getPawnWorldPos(p.tile, p.id));
+          this.orientPawnTowardNextTile(p.tile, mesh);
         }
       });
     }
+    this.syncFppVisibility();
   }
 
   ensureOverlayElement(playerId, player, isActive) {
@@ -1307,98 +1764,245 @@ export class GameScene3D {
     this.emoteTimeouts.set(playerId, timer);
   }
 
-  setActiveFollow(playerId) {
+  setActivePlayer(playerId) {
+    this.activePlayerId = playerId || null;
     this.activeFollowObj = playerId ? this.pawns.get(playerId) || null : null;
+    this.syncFppVisibility();
+  }
+
+  setActiveFollow(playerId) {
+    this.setActivePlayer(playerId);
+  }
+
+  syncFppVisibility() {
+    const fppPid = this.cameraMode === 'fpp' ? this.activePlayerId : null;
+    const activePawn = fppPid ? this.pawns.get(fppPid) : null;
+    const activeMeta = fppPid ? this.pawnMeta.get(fppPid) : null;
+    this.pawns.forEach((mesh, pid) => {
+      const hideOwn = pid === fppPid;
+      const meta = this.pawnMeta.get(pid);
+      const tooCloseOther = Boolean(
+        fppPid &&
+          !hideOwn &&
+          activePawn &&
+          ((activeMeta && meta && activeMeta.tile === meta.tile) ||
+            mesh.position.distanceTo(activePawn.position) < 1.25)
+      );
+      mesh.visible = !tooCloseOther;
+      if (mesh.userData?.visualHolder) {
+        mesh.userData.visualHolder.visible = !hideOwn;
+      }
+      if (mesh.userData?.rig?.head) {
+        mesh.userData.rig.head.visible = !hideOwn;
+      }
+      if (mesh.userData?.shieldAura) {
+        mesh.userData.shieldAura.visible = !hideOwn && Boolean(meta?.shield);
+      }
+      if (mesh.userData?.activeRing) {
+        mesh.userData.activeRing.visible = !hideOwn && Boolean(meta?.isActive);
+      }
+    });
+  }
+
+  setCameraMode(mode, activePlayerId = null) {
+    this.cameraMode = ['overview', 'tpp', 'fpp', 'top'].includes(mode) ? mode : 'overview';
+    if (activePlayerId) this.setActivePlayer(activePlayerId);
+    else this.syncFppVisibility();
+
+    const isPov = this.cameraMode === 'tpp' || this.cameraMode === 'fpp';
+    this.controls.enabled = !isPov;
+    this.fppYawOffset = 0;
+    this.fppPitchOffset = 0;
+
+    if (!isPov) {
+      this.setCameraPreset(this.cameraMode, activePlayerId);
+    } else {
+      this.desiredCameraPos = null;
+    }
   }
 
   async animateHopPath(playerId, pathTiles, onEachStep) {
     const mesh = this.pawns.get(playerId);
     if (!mesh || !pathTiles.length) return;
-    this.setActiveFollow(playerId);
+    this.setActivePlayer(playerId);
+    this.isPawnMoving = true;
+
+    const isMountain = this.boardStyle === 'mountain';
+    const meta = this.pawnMeta.get(playerId);
+    let prevTile = meta ? meta.tile : 0;
 
     for (let i = 0; i < pathTiles.length; i++) {
       const nextTile = pathTiles[i];
-      const meta = this.pawnMeta.get(playerId);
-      if (meta) meta.tile = nextTile;
-
       const startPos = mesh.position.clone();
+      if (meta) meta.tile = nextTile;
       const endPos = this.getPawnWorldPos(nextTile, playerId);
-
-      // Hadapkan pion ke arah gerak
-      const dx = endPos.x - startPos.x;
-      const dz = endPos.z - startPos.z;
-      if (Math.hypot(dx, dz) > 0.05) {
-        mesh.rotation.y = Math.atan2(dx, dz);
-      }
 
       if (typeof onEachStep === 'function') onEachStep(nextTile, i);
 
-      const dur = 225;
-      const t0 = performance.now();
-      await new Promise((resolve) => {
-        const frame = (now) => {
-          const t = Math.min(1, (now - t0) / dur);
-          mesh.position.lerpVectors(startPos, endPos, easeInOutQuad(t));
-          mesh.position.y += Math.sin(t * Math.PI) * 0.9;
-          if (t < 1) requestAnimationFrame(frame);
-          else resolve();
-        };
-        requestAnimationFrame(frame);
-      });
+      if (isMountain) {
+        // Mode Gunung: Berjalan kaki santai & realistis menyusuri jalan setapak & kelokan U-turn
+        const rawWps = BoardConfig.getMountainStepWaypoints(prevTile, nextTile);
+        const pts = rawWps.map((p) => new THREE.Vector3(p.x, p.y + 0.02, p.z));
+        pts[0] = startPos;
+        pts[pts.length - 1] = endPos;
+        const pathCurve = pts.length > 2 ? new THREE.CatmullRomCurve3(pts) : null;
+        const dur = pts.length > 2 ? 950 : 700;
+        const t0 = performance.now();
+
+        await new Promise((resolve) => {
+          const frame = (now) => {
+            const t = Math.min(1, (now - t0) / dur);
+            if (pathCurve) {
+              const p = pathCurve.getPointAt(t);
+              mesh.position.copy(p);
+              const tan = pathCurve.getTangentAt(Math.min(0.99, t));
+              if (Math.hypot(tan.x, tan.z) > 0.01) {
+                mesh.rotation.y = Math.atan2(tan.x, tan.z);
+              }
+            } else {
+              mesh.position.lerpVectors(startPos, endPos, t);
+              const dx = endPos.x - startPos.x;
+              const dz = endPos.z - startPos.z;
+              if (Math.hypot(dx, dz) > 0.03) {
+                mesh.rotation.y = Math.atan2(dx, dz);
+              }
+            }
+
+            const phase = (i * 2 + t * 2) * Math.PI;
+            this.applyPawnRigPose(mesh, {
+              legSwing: Math.sin(phase) * 0.68,
+              armSwing: Math.sin(phase) * 0.52,
+              bobY: Math.abs(Math.sin(phase)) * 0.05,
+              torsoLean: 0.08
+            });
+
+            if (t < 1) requestAnimationFrame(frame);
+            else resolve();
+          };
+          requestAnimationFrame(frame);
+        });
+      } else {
+        // Mode Papan Catur Klasik: Melompat parabolik antar petak
+        const dx = endPos.x - startPos.x;
+        const dz = endPos.z - startPos.z;
+        if (Math.hypot(dx, dz) > 0.05) {
+          mesh.rotation.y = Math.atan2(dx, dz);
+        }
+
+        const dur = 420;
+        const t0 = performance.now();
+        await new Promise((resolve) => {
+          const frame = (now) => {
+            const t = Math.min(1, (now - t0) / dur);
+            const jumpArc = Math.sin(t * Math.PI);
+            mesh.position.lerpVectors(startPos, endPos, easeInOutQuad(t));
+            mesh.position.y += jumpArc * 0.9;
+            this.applyPawnRigPose(mesh, {
+              armRaise: jumpArc * 1.15,
+              legSwing: jumpArc * 0.35,
+              torsoLean: jumpArc * 0.1
+            });
+            if (t < 1) requestAnimationFrame(frame);
+            else resolve();
+          };
+          requestAnimationFrame(frame);
+        });
+      }
+
+      prevTile = nextTile;
     }
+
+    this.isPawnMoving = false;
+    this.applyPawnRigPose(mesh, {});
     this.repositionAllPawnsSmooth();
   }
 
   async animateLadderClimb(playerId, fromTile, toTile) {
     const mesh = this.pawns.get(playerId);
     if (!mesh) return;
-    this.setActiveFollow(playerId);
+    this.setActivePlayer(playerId);
+    this.isPawnMoving = true;
+    this.climbOrSlidePitch = 0.24;
 
     const isMountain = this.boardStyle === 'mountain';
     const mountainCurve = isMountain ? this.mountainLadderCurves.get(fromTile) : null;
+    const mountainYaw = isMountain ? this.mountainLadderYaws.get(fromTile) : null;
     const ladder = !isMountain ? this.ladderPaths.get(fromTile) : null;
     const meta = this.pawnMeta.get(playerId);
     if (meta) meta.tile = toTile;
 
     const startPos = ladder ? ladder.start.clone() : mesh.position.clone();
     const endPos = this.getPawnWorldPos(toTile, playerId);
+    const curveStart = mountainCurve ? mountainCurve.getPointAt(0) : startPos;
+    const curveEnd = mountainCurve ? mountainCurve.getPointAt(1) : endPos;
+    const startOffset = startPos.clone().sub(curveStart);
+    const endOffset = endPos.clone().sub(curveEnd);
 
+    const startYaw = mesh.rotation.y;
     const dx = endPos.x - startPos.x;
     const dz = endPos.z - startPos.z;
-    if (Math.hypot(dx, dz) > 0.05) {
-      mesh.rotation.y = Math.atan2(dx, dz);
-    }
+    const targetYaw =
+      typeof mountainYaw === 'number'
+        ? mountainYaw
+        : Math.hypot(dx, dz) > 0.05
+        ? Math.atan2(dx, dz)
+        : startYaw;
+    const yawDiff = Math.atan2(Math.sin(targetYaw - startYaw), Math.cos(targetYaw - startYaw));
 
-    const dur = 1050;
+    const dur = 1800;
     const t0 = performance.now();
     await new Promise((resolve) => {
       const frame = (now) => {
         const t = Math.min(1, (now - t0) / dur);
         const eased = easeInOutQuad(t);
+        const stepT = THREE.MathUtils.clamp(eased + Math.sin(t * Math.PI * 14) * 0.006, 0, 1);
+        const yawAlpha = Math.min(1, t / 0.12);
+        mesh.rotation.y = startYaw + yawDiff * easeInOutQuad(yawAlpha);
+
         if (mountainCurve) {
-          const p = mountainCurve.getPointAt(eased);
+          const p = mountainCurve.getPointAt(stepT);
+          if (t < 0.12) {
+            p.addScaledVector(startOffset, 1 - t / 0.12);
+          } else if (t > 0.88) {
+            p.addScaledVector(endOffset, (t - 0.88) / 0.12);
+          }
           mesh.position.copy(p);
+
+          const tan = mountainCurve.getTangentAt(Math.min(0.98, stepT));
+          const tanPitch = Math.atan2(tan.y, Math.max(0.15, Math.hypot(tan.x, tan.z)));
+          this.climbOrSlidePitch = THREE.MathUtils.clamp(tanPitch * 0.56, 0.12, 0.34);
         } else {
           mesh.position.lerpVectors(startPos, endPos, eased);
         }
-        // Gerak kiri-kanan kecil seakan memanjat anak tangga
-        mesh.rotation.z = Math.sin(t * Math.PI * 8) * 0.12;
+        this.applyPawnRigPose(mesh, {
+          climbPhase: t * Math.PI * 14,
+          torsoLean: 0.16
+        });
+        mesh.rotation.z = Math.sin(t * Math.PI * 14) * 0.05;
         if (t < 1) requestAnimationFrame(frame);
         else {
           mesh.rotation.z = 0;
           mesh.position.copy(endPos);
+          this.applyPawnRigPose(mesh, {});
+          this.orientPawnTowardNextTile(toTile, mesh);
           resolve();
         }
       };
       requestAnimationFrame(frame);
     });
+    this.climbOrSlidePitch = 0;
+    this.isPawnMoving = false;
     this.repositionAllPawnsSmooth();
   }
 
   async animateSnakeSlide(playerId, fromTile, toTile) {
     const mesh = this.pawns.get(playerId);
     if (!mesh) return;
-    this.setActiveFollow(playerId);
+    this.setActivePlayer(playerId);
+    this.isPawnMoving = true;
+    const isMountainStream = this.boardStyle === 'mountain' && Boolean(BoardConfig.STREAMS[fromTile]);
+    const isMountainLandslide = this.boardStyle === 'mountain' && Boolean(BoardConfig.LANDSLIDES[fromTile]);
+    this.climbOrSlidePitch = isMountainStream ? -0.26 : isMountainLandslide ? -0.32 : -0.45;
 
     const curve =
       this.boardStyle === 'mountain'
@@ -1408,7 +2012,7 @@ export class GameScene3D {
     if (meta) meta.tile = toTile;
     const finalPos = this.getPawnWorldPos(toTile, playerId);
 
-    const dur = 1200;
+    const dur = 2000;
     const t0 = performance.now();
     await new Promise((resolve) => {
       const frame = (now) => {
@@ -1417,23 +2021,80 @@ export class GameScene3D {
         if (curve) {
           const p = curve.getPointAt(eased);
           mesh.position.copy(p);
-          mesh.position.y += 0.25;
           const tangent = curve.getTangentAt(Math.min(0.99, eased));
           mesh.rotation.y = Math.atan2(tangent.x, tangent.z);
-          mesh.rotation.z = Math.sin(t * Math.PI * 6) * 0.18;
+
+          if (isMountainStream) {
+            mesh.position.y += 0.04 + Math.sin(t * Math.PI * 14) * 0.025;
+            mesh.rotation.z = Math.sin(t * Math.PI * 10) * 0.12;
+            const tanPitch = Math.atan2(tangent.y, Math.max(0.15, Math.hypot(tangent.x, tangent.z)));
+            this.climbOrSlidePitch = THREE.MathUtils.clamp(tanPitch * 0.65, -0.52, -0.18);
+          } else if (isMountainLandslide) {
+            mesh.position.y += 0.03 + Math.abs(Math.sin(t * Math.PI * 16)) * 0.025;
+            mesh.rotation.z = Math.sin(t * Math.PI * 12) * 0.14;
+            const tanPitch = Math.atan2(tangent.y, Math.max(0.15, Math.hypot(tangent.x, tangent.z)));
+            this.climbOrSlidePitch = THREE.MathUtils.clamp(tanPitch * 0.68, -0.55, -0.20);
+          } else {
+            mesh.position.y += 0.25;
+            mesh.rotation.z = Math.sin(t * Math.PI * 8) * 0.16;
+          }
         } else {
           mesh.position.lerp(finalPos, eased);
+        }
+
+        if (isMountainStream) {
+          this.applyPawnRigPose(mesh, {
+            armRaise: 1.15 + Math.sin(t * Math.PI * 10) * 0.35,
+            legSwing: Math.sin(t * Math.PI * 10) * 0.28,
+            torsoLean: -0.14
+          });
+        } else if (isMountainLandslide) {
+          this.applyPawnRigPose(mesh, {
+            armRaise: 1.45 + Math.sin(t * Math.PI * 14) * 0.35,
+            legSwing: Math.sin(t * Math.PI * 14) * 0.32,
+            torsoLean: -0.20
+          });
+        } else {
+          this.applyPawnRigPose(mesh, {
+            armRaise: 2.2 + Math.sin(t * Math.PI * 12) * 0.35,
+            legSwing: Math.sin(t * Math.PI * 12) * 0.4,
+            torsoLean: -0.22
+          });
         }
         if (t < 1) requestAnimationFrame(frame);
         else {
           mesh.rotation.z = 0;
           mesh.position.copy(finalPos);
+          this.applyPawnRigPose(mesh, {});
+          if (isMountainStream || isMountainLandslide) {
+            this.orientPawnTowardNextTile(toTile, mesh);
+          }
           resolve();
         }
       };
       requestAnimationFrame(frame);
     });
+    this.climbOrSlidePitch = 0;
+    this.isPawnMoving = false;
     this.repositionAllPawnsSmooth();
+  }
+
+  orientPawnTowardNextTile(tile, mesh) {
+    if (!mesh) return;
+    let fromP;
+    let toP;
+    if (tile >= 100) {
+      fromP = BoardConfig.tileToWorld(99, this.boardStyle);
+      toP = BoardConfig.tileToWorld(100, this.boardStyle);
+    } else {
+      fromP = BoardConfig.tileToWorld(tile, this.boardStyle);
+      toP = BoardConfig.tileToWorld(tile + 1, this.boardStyle);
+    }
+    const dx = toP.x - fromP.x;
+    const dz = toP.z - fromP.z;
+    if (Math.hypot(dx, dz) > 0.02) {
+      mesh.rotation.y = Math.atan2(dx, dz);
+    }
   }
 
   repositionAllPawnsSmooth() {
@@ -1441,6 +2102,7 @@ export class GameScene3D {
       const mesh = this.pawns.get(pid);
       if (mesh) {
         mesh.position.copy(this.getPawnWorldPos(meta.tile, pid));
+        this.orientPawnTowardNextTile(meta.tile, mesh);
       }
     });
   }
@@ -1525,7 +2187,9 @@ export class GameScene3D {
       d.visible = false;
     });
     this.repositionAllPawnsSmooth();
-    this.setCameraPreset('overview');
+    if (this.cameraMode !== 'tpp' && this.cameraMode !== 'fpp') {
+      this.setCameraPreset(this.cameraMode);
+    }
   }
 
   setAutoFollow(enabled) {
@@ -1566,9 +2230,14 @@ export class GameScene3D {
     const h = this.container.clientHeight || window.innerHeight;
     const proj = new THREE.Vector3();
 
+    const fppPid = this.cameraMode === 'fpp' ? this.activePlayerId : null;
     this.pawns.forEach((mesh, pid) => {
       const el = this.overlayEls.get(pid);
       if (!el) return;
+      if (pid === fppPid || !mesh.visible) {
+        el.style.opacity = '0';
+        return;
+      }
       const meta = this.pawnMeta.get(pid);
       let extraY = 0;
       if (meta) {
@@ -1667,23 +2336,100 @@ export class GameScene3D {
       }
     }
 
-    // Auto-follow pion atau preset kamera halus
+    // Kamera POV (TPP / FPP) atau Orbit / Auto-Follow
     const now = performance.now();
-    if (!this.userDragging) {
-      if (this.desiredCameraPos) {
-        this.camera.position.lerp(this.desiredCameraPos, 0.08);
-        this.controls.target.lerp(this.desiredTarget, 0.09);
-        if (this.camera.position.distanceTo(this.desiredCameraPos) < 0.25) {
-          this.desiredCameraPos = null;
-        }
-      } else if (this.autoFollow && this.activeFollowObj && now > this.cameraPresetLockUntil) {
-        const focus = this.activeFollowObj.position;
-        this.desiredTarget.lerp(new THREE.Vector3(focus.x, focus.y + 0.8, focus.z), 0.12);
-        this.controls.target.lerp(this.desiredTarget, 0.1);
+    const povPawn =
+      (this.activePlayerId ? this.pawns.get(this.activePlayerId) : null) || this.activeFollowObj;
+
+    if ((this.cameraMode === 'tpp' || this.cameraMode === 'fpp') && povPawn) {
+      if (this.isPawnMoving && !this.povDragging) {
+        this.fppYawOffset *= 0.94;
+        this.fppPitchOffset *= 0.94;
       }
+
+      const yaw = povPawn.rotation.y + this.fppYawOffset;
+      const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+      const right = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
+
+      if (this.cameraMode === 'tpp') {
+        const shoulderPivot = povPawn.position.clone().add(new THREE.Vector3(0, 1.32, 0));
+        const desiredPos = povPawn.position
+          .clone()
+          .addScaledVector(fwd, -2.75)
+          .addScaledVector(right, 0.32);
+        desiredPos.y += 1.95 + this.fppPitchOffset * 1.4;
+
+        if (this.boardStyle === 'mountain' && this.tppColliders.length > 0) {
+          const camVec = desiredPos.clone().sub(shoulderPivot);
+          const camDist = camVec.length();
+          if (camDist > 0.1) {
+            this.tppRaycaster.set(shoulderPivot, camVec.clone().normalize());
+            this.tppRaycaster.far = camDist + 0.3;
+            const hits = this.tppRaycaster.intersectObjects(this.tppColliders, false);
+            if (hits.length > 0 && hits[0].distance < camDist) {
+              const safeDist = Math.max(1.1, hits[0].distance - 0.38);
+              desiredPos.copy(shoulderPivot).addScaledVector(camVec.normalize(), safeDist);
+              desiredPos.y += 0.28;
+            }
+          }
+
+          const skyOrigin = new THREE.Vector3(desiredPos.x, desiredPos.y + 10, desiredPos.z);
+          this.tppRaycaster.set(skyOrigin, new THREE.Vector3(0, -1, 0));
+          this.tppRaycaster.far = 14;
+          const floorHits = this.tppRaycaster.intersectObjects(this.tppColliders, false);
+          if (floorHits.length > 0) {
+            const groundY = floorHits[0].point.y;
+            if (desiredPos.y < groundY + 0.55) {
+              desiredPos.y = groundY + 0.65;
+            }
+          }
+        }
+
+        const lookTarget = povPawn.position.clone().addScaledVector(fwd, 2.8);
+        lookTarget.y += 1.15 - this.fppPitchOffset * 1.2 + this.climbOrSlidePitch * 0.9;
+
+        this.camera.position.lerp(desiredPos, 0.14);
+        this.controls.target.lerp(lookTarget, 0.18);
+        this.camera.lookAt(this.controls.target);
+      } else {
+        this.syncFppVisibility();
+        const bob = povPawn.userData?.rig?.bodyGroup?.position?.y || 0;
+        const eyePos = povPawn.position.clone().addScaledVector(fwd, 0.2);
+        eyePos.y += 1.28 + bob;
+
+        const pitch = THREE.MathUtils.clamp(
+          this.climbOrSlidePitch + this.fppPitchOffset - 0.08,
+          -0.75,
+          0.85
+        );
+        const lookDir = new THREE.Vector3(
+          Math.sin(yaw) * Math.cos(pitch),
+          Math.sin(pitch),
+          Math.cos(yaw) * Math.cos(pitch)
+        );
+        const lookTarget = eyePos.clone().addScaledVector(lookDir, 4.0);
+
+        this.camera.position.lerp(eyePos, 0.35);
+        this.controls.target.lerp(lookTarget, 0.35);
+        this.camera.lookAt(this.controls.target);
+      }
+    } else {
+      if (!this.userDragging) {
+        if (this.desiredCameraPos) {
+          this.camera.position.lerp(this.desiredCameraPos, 0.08);
+          this.controls.target.lerp(this.desiredTarget, 0.09);
+          if (this.camera.position.distanceTo(this.desiredCameraPos) < 0.25) {
+            this.desiredCameraPos = null;
+          }
+        } else if (this.autoFollow && this.activeFollowObj && now > this.cameraPresetLockUntil) {
+          const focus = this.activeFollowObj.position;
+          this.desiredTarget.lerp(new THREE.Vector3(focus.x, focus.y + 0.8, focus.z), 0.12);
+          this.controls.target.lerp(this.desiredTarget, 0.1);
+        }
+      }
+      this.controls.update();
     }
 
-    this.controls.update();
     this.renderer.render(this.scene, this.camera);
     this.updateOverlays();
   }

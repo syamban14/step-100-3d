@@ -151,6 +151,26 @@
     return boardStyle === 'mountain' ? tileToMountainWorld(tile) : tileToClassicWorld(tile);
   }
 
+  function getMountainStepWaypoints(fromTile, toTile) {
+    const pFrom = tileToMountainWorld(fromTile);
+    const pTo = tileToMountainWorld(toTile);
+    if (fromTile <= 0 || toTile <= 0) {
+      return [pFrom, pTo];
+    }
+    const rowFrom = Math.floor((fromTile - 1) / 10);
+    const rowTo = Math.floor((toTile - 1) / 10);
+    if (rowFrom !== rowTo && Math.abs(toTile - fromTile) === 1) {
+      const outDir = pTo.x >= 0 ? 1.0 : -1.0;
+      const mid = {
+        x: (pFrom.x + pTo.x) * 0.5 + outDir * 1.15,
+        y: (pFrom.y + pTo.y) * 0.5,
+        z: (pFrom.z + pTo.z) * 0.5 - 0.15
+      };
+      return [pFrom, mid, pTo];
+    }
+    return [pFrom, pTo];
+  }
+
   function rollDiceValues(diceCount, rngFn) {
     const rand = typeof rngFn === 'function' ? rngFn : Math.random;
     const count = diceCount === 2 ? 2 : 1;
@@ -342,6 +362,7 @@
     tileToClassicWorld,
     tileToMountainWorld,
     tileToWorld,
+    getMountainStepWaypoints,
     rollDiceValues,
     resolveTurn
   };

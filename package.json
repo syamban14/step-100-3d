@@ -1,7 +1,7 @@
 {
   "name": "ular-tangga-3d",
   "version": "1.0.0",
-  "description": "Game Ular Tangga 3D Interaktif (Three.js + Node.js + Express + Socket.io) - Hybrid Local/Bot & Multiplayer Online",
+  "description": "Step 100 3D — Multi-World 3D Board Adventure (Three.js + Node.js + Express + Socket.io) - Hybrid Local/Bot & Multiplayer Online",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

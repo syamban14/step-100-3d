@@ -76,13 +76,13 @@ function estimateAnimDurationMs(result) {
   let ms = 1250; // Lempar dadu 3D & pantulan
   for (const step of result.steps) {
     if (step.type === 'walk') {
-      ms += Math.max(1, step.path.length) * 260;
+      ms += Math.max(1, step.path.length) * 780 + 250;
     } else if (step.type === 'mystery') {
-      ms += 1000 + (step.path ? step.path.length * 240 : 0);
+      ms += 1000 + (step.path ? step.path.length * 750 : 0);
     } else if (step.type === 'ladder') {
-      ms += 1150;
+      ms += 1850;
     } else if (step.type === 'snake') {
-      ms += 1300;
+      ms += 2050;
     } else if (step.type === 'shield_saved') {
       ms += 800;
     }
@@ -472,5 +472,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Ular Tangga 3D berjalan di http://localhost:${PORT}`);
+  console.log(`Step 100 3D berjalan di http://localhost:${PORT}`);
 });
