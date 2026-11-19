@@ -70,14 +70,22 @@ jobs:
           if [ -z "$VPS_HOST" ] || [ -z "$VPS_USERNAME" ] || [ -z "$VPS_SSH_KEY" ]; then
             echo "configured=false" >> $GITHUB_OUTPUT
             echo "⚠️ Secret VPS (VPS_HOST/VPS_USERNAME/VPS_SSH_KEY) belum lengkap di GitHub Secrets. Melewati tahap deploy ke VPS."
+          elif printf '%s' "$VPS_SSH_KEY" | grep -qE "^[[:space:]]*(ssh-rsa|ssh-ed25519|ecdsa-sha2|ssh-dss) "; then
+            echo "❌ Secret VPS_SSH_KEY terdeteksi sebagai SSH Public Key (.pub), bukan Private Key atau Password SSH."
+            echo "👉 Ganti VPS_SSH_KEY dengan isi SSH Private Key (diawali -----BEGIN ... PRIVATE KEY-----) atau Password SSH user VPS Anda."
+            exit 1
           else
             echo "configured=true" >> $GITHUB_OUTPUT
             if printf '%s' "$VPS_SSH_KEY" | grep -q "BEGIN "; then
+              mkdir -p ~/.ssh && chmod 700 ~/.ssh
+              printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/vps_key
+              chmod 600 ~/.ssh/vps_key
               echo "auth_mode=key" >> $GITHUB_OUTPUT
-              echo "✅ Secret VPS lengkap (mode autentikasi: SSH Private Key). Melanjutkan deploy ke VPS..."
+              echo "✅ Secret VPS lengkap (mode autentikasi: SSH Private Key)."
             else
               echo "auth_mode=password" >> $GITHUB_OUTPUT
-              echo "✅ Secret VPS lengkap (mode autentikasi: Password SSH). Melanjutkan deploy ke VPS..."
+              echo "✅ Secret VPS lengkap (mode autentikasi: Password / Keyboard-Interactive SSH)."
+              command -v sshpass >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq sshpass)
             fi
           fi
 
@@ -85,31 +93,25 @@ jobs:
         if: steps.check_secrets.outputs.configured == 'true'
         uses: actions/checkout@v4
 
-      - name: Transfer docker-compose.yml to VPS
+      - name: Deploy docker-compose.yml & run container on VPS
         if: steps.check_secrets.outputs.configured == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ steps.check_secrets.outputs.auth_mode == 'key' && secrets.VPS_SSH_KEY || '' }}
-          password: ${{ steps.check_secrets.outputs.auth_mode == 'password' && secrets.VPS_SSH_KEY || '' }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          source: "docker-compose.yml"
-          target: "step-100-3d"
+        env:
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          SSHPASS: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -e
+          SSH_OPTS="-p ${VPS_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25"
+          SCP_OPTS="-P ${VPS_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25"
+          REMOTE="${VPS_USERNAME}@${VPS_HOST}"
 
-      - name: Pull new GHCR image & run container on VPS
-        if: steps.check_secrets.outputs.configured == 'true'
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ steps.check_secrets.outputs.auth_mode == 'key' && secrets.VPS_SSH_KEY || '' }}
-          password: ${{ steps.check_secrets.outputs.auth_mode == 'password' && secrets.VPS_SSH_KEY || '' }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          script: |
-            set -e
-            mkdir -p ~/step-100-3d
-            cd ~/step-100-3d
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
+          if [ "${{ steps.check_secrets.outputs.auth_mode }}" = "key" ]; then
+            ssh $SSH_OPTS -i ~/.ssh/vps_key "$REMOTE" "mkdir -p ~/step-100-3d"
+            scp $SCP_OPTS -i ~/.ssh/vps_key docker-compose.yml "$REMOTE:~/step-100-3d/docker-compose.yml"
+            ssh $SSH_OPTS -i ~/.ssh/vps_key "$REMOTE" "cd ~/step-100-3d && docker compose pull && docker compose up -d --remove-orphans && docker image prune -f"
+          else
+            SSH_PASS_OPTS="$SSH_OPTS -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no"
+            SCP_PASS_OPTS="$SCP_OPTS -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no"
+            sshpass -e ssh $SSH_PASS_OPTS "$REMOTE" "mkdir -p ~/step-100-3d"
+            sshpass -e scp $SCP_PASS_OPTS docker-compose.yml "$REMOTE:~/step-100-3d/docker-compose.yml"
+            sshpass -e ssh $SSH_PASS_OPTS "$REMOTE" "cd ~/step-100-3d && docker compose pull && docker compose up -d --remove-orphans && docker image prune -f"
+          fi
