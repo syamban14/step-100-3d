@@ -49,6 +49,7 @@ export class GameScene3D {
     this.mountainTreeMeshes = [];
     this._treeWorldPos = new THREE.Vector3();
     this.wildernessGroup = null;
+    this.wildernessTreesGroup = null;
     this.wildernessZoneGroups = [];
     this.wildernessZoneFireflies = [];
     this.wildernessLights = [];
@@ -1268,10 +1269,14 @@ export class GameScene3D {
       this.mountainGroup.add(root);
     });
 
-    // Grup Hutan Belantara Dunia Gelap Per-Zona (hanya aktif saat berada di dalam zona & kamera TPP/FPP)
+    // Grup Hutan Belantara & Kantong Teduh (hanya aktif di TPP/FPP; jamur & kunang hanya di zona aktif)
     this.wildernessGroup = new THREE.Group();
     this.wildernessGroup.visible = false;
     this.mountainGroup.add(this.wildernessGroup);
+
+    this.wildernessTreesGroup = new THREE.Group();
+    this.wildernessTreesGroup.visible = false;
+    this.wildernessGroup.add(this.wildernessTreesGroup);
 
     this.wildernessZoneGroups = [0, 1, 2].map(() => {
       const zg = new THREE.Group();
@@ -1285,7 +1290,12 @@ export class GameScene3D {
     loader.load('./assets/models/wilderness_forest.glb', (gltf) => {
       const wfRoot = this.prepareLoadedGltf(gltf.scene);
       [...wfRoot.children].forEach((child) => {
-        const match = /_z([012])_/.exec(child.name || '');
+        const name = child.name || '';
+        if (name.startsWith('WildernessTree_')) {
+          this.wildernessTreesGroup.add(child);
+          return;
+        }
+        const match = /_z([012])_/.exec(name);
         const zIdx = match ? Number(match[1]) : 0;
         const targetGroup = this.wildernessZoneGroups[zIdx] || this.wildernessZoneGroups[0];
         targetGroup.add(child);
@@ -2540,7 +2550,10 @@ export class GameScene3D {
     const inWilderness = zoneIdx !== -1;
 
     if (this.wildernessGroup) {
-      this.wildernessGroup.visible = inWilderness;
+      this.wildernessGroup.visible = isMountain && isPov;
+    }
+    if (this.wildernessTreesGroup) {
+      this.wildernessTreesGroup.visible = isMountain && isPov;
     }
     this.wildernessZoneGroups.forEach((zg, idx) => {
       zg.visible = inWilderness && idx === zoneIdx;

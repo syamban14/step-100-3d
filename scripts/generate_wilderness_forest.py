@@ -22,6 +22,7 @@ os.makedirs(os.path.dirname(BLEND_PATH), exist_ok=True)
 os.makedirs(os.path.dirname(GLB_PATH), exist_ok=True)
 
 WILDERNESS_ZONES = [(15, 22), (45, 50), (63, 68)]
+SHADE_GROVE_ZONES = [(6, 11), (29, 35), (77, 83)]
 HAZARD_ENDPOINT_TILES = (
     4, 25, 13, 46, 33, 49, 42, 63, 50, 69, 62, 81, 74, 92, 84, 97,
     27, 5, 40, 3, 66, 45, 89, 53, 43, 18, 54, 31, 76, 58, 99, 41,
@@ -331,6 +332,43 @@ def main():
                     zone_mush += 1
 
         print(f"[Wilderness zone {t_start}-{t_end}] trees={zone_trees}, mushrooms={zone_mush}")
+
+    # 3. Kantong teduh alami di beberapa segmen jalur (pohon gede saja tanpa jamur bercahaya)
+    grove_total = 0
+    for grove_idx, (t_start, t_end) in enumerate(SHADE_GROVE_ZONES):
+        grove_trees = 0
+        grove_pts = [mt.tile_to_trail_point(t) for t in range(t_start, t_end + 1)]
+        for z_pt in grove_pts:
+            for rad in (1.35, 1.85, 2.45, 3.15, 4.00, 5.00):
+                for a_step in range(24):
+                    ang = (a_step / 24.0) * math.pi * 2.0 + rng.uniform(-0.12, 0.12)
+                    px = z_pt.x + math.cos(ang) * rad
+                    py = z_pt.y + math.sin(ang) * rad
+                    if abs(px) > 16.8 or abs(py) > 16.4:
+                        continue
+                    if not is_clear(px, py, min_trail_dist=1.25, min_hazard_dist=1.45, min_endpoint_dist=1.45):
+                        continue
+                    if any(math.hypot(px - tx, py - ty) < 1.10 for tx, ty in tree_spots):
+                        continue
+                    surf_z, _ = mt.sample_surface_height(px, py, trail_samples)
+                    if surf_z < 0.25 or surf_z > 10.2:
+                        continue
+
+                    aim_yaw = math.atan2(z_pt.y - py, z_pt.x - px) + rng.uniform(-0.35, 0.35)
+                    spawn_instance(
+                        tree_tmpl,
+                        f"WildernessTree_g{grove_idx}_{tree_count:02d}",
+                        wf_col,
+                        (px, py, surf_z - 0.08),
+                        rot_z=aim_yaw,
+                        scale=rng.uniform(0.95, 1.28),
+                    )
+                    tree_spots.append((px, py))
+                    tree_count += 1
+                    grove_trees += 1
+                    grove_total += 1
+
+        print(f"[Shade grove {t_start}-{t_end}] trees={grove_trees}")
 
     # Hapus dua objek template di origin (0,0,0) agar hanya instance yang tersimpan & terekspor
     bpy.data.objects.remove(tree_tmpl, do_unlink=True)
