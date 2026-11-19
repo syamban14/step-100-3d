@@ -60,17 +60,25 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
 
     steps:
       - name: Check if VPS secrets are configured
         id: check_secrets
         run: |
-          if [ -z "$VPS_HOST" ]; then
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USERNAME" ] || [ -z "$VPS_SSH_KEY" ]; then
             echo "configured=false" >> $GITHUB_OUTPUT
-            echo "⚠️ Secret VPS_HOST belum diatur di GitHub Secrets. Melewati tahap deploy ke VPS."
+            echo "⚠️ Secret VPS (VPS_HOST/VPS_USERNAME/VPS_SSH_KEY) belum lengkap di GitHub Secrets. Melewati tahap deploy ke VPS."
           else
             echo "configured=true" >> $GITHUB_OUTPUT
-            echo "✅ Secret VPS_HOST ditemukan. Melanjutkan deploy ke VPS..."
+            if printf '%s' "$VPS_SSH_KEY" | grep -q "BEGIN "; then
+              echo "auth_mode=key" >> $GITHUB_OUTPUT
+              echo "✅ Secret VPS lengkap (mode autentikasi: SSH Private Key). Melanjutkan deploy ke VPS..."
+            else
+              echo "auth_mode=password" >> $GITHUB_OUTPUT
+              echo "✅ Secret VPS lengkap (mode autentikasi: Password SSH). Melanjutkan deploy ke VPS..."
+            fi
           fi
 
       - name: Checkout repository
@@ -83,10 +91,11 @@ jobs:
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+          key: ${{ steps.check_secrets.outputs.auth_mode == 'key' && secrets.VPS_SSH_KEY || '' }}
+          password: ${{ steps.check_secrets.outputs.auth_mode == 'password' && secrets.VPS_SSH_KEY || '' }}
           port: ${{ secrets.VPS_PORT || 22 }}
           source: "docker-compose.yml"
-          target: "~/step-100-3d"
+          target: "step-100-3d"
 
       - name: Pull new GHCR image & run container on VPS
         if: steps.check_secrets.outputs.configured == 'true'
@@ -94,7 +103,8 @@ jobs:
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+          key: ${{ steps.check_secrets.outputs.auth_mode == 'key' && secrets.VPS_SSH_KEY || '' }}
+          password: ${{ steps.check_secrets.outputs.auth_mode == 'password' && secrets.VPS_SSH_KEY || '' }}
           port: ${{ secrets.VPS_PORT || 22 }}
           script: |
             set -e
