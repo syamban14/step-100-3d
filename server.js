@@ -5,11 +5,16 @@ const { Server } = require('socket.io');
 const BoardConfig = require('./public/boardConfig.js');
 
 const PORT = Number(process.env.PORT) || 3001;
+const DISCONNECT_GRACE_MS = 15000;
+const LOBBY_DISCONNECT_GRACE_MS = 30000;
+const EMPTY_ROOM_CLEANUP_MS = 120000;
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: { origin: '*' },
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -26,6 +31,10 @@ app.get('/health', (req, res) => {
 });
 
 const BOT_NAMES = ['Bot Komodo', 'Bot Garuda', 'Bot Cendrawasih', 'Bot Harimau'];
+
+function generatePlayerId() {
+  return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -65,6 +74,7 @@ function serializeRoom(room) {
       characterId: p.characterId,
       isBot: p.isBot,
       connected: p.connected,
+      botTakeover: Boolean(p.botTakeover),
       tile: p.tile,
       shield: p.shield,
       consecutiveBonus: p.consecutiveBonus
@@ -76,7 +86,7 @@ function estimateAnimDurationMs(result) {
   let ms = result.diceValues ? 1250 : 250; // Lempar dadu 3D & pantulan jika ada
   for (const step of result.steps || []) {
     if (step.type === 'walk') {
-      ms += Math.max(1, step.path.length) * 780 + 250;
+      ms += Math.max(1, step.path.length) * 880 + 250;
     } else if (step.type === 'mystery_quiz') {
       ms += 900;
     } else if (step.type === 'ladder') {
@@ -106,6 +116,10 @@ function clearRoomTimers(room) {
   if (room.cleanupTimer) {
     clearTimeout(room.cleanupTimer);
     room.cleanupTimer = null;
+  }
+  if (room.disconnectTimers) {
+    room.disconnectTimers.forEach((t) => clearTimeout(t));
+    room.disconnectTimers.clear();
   }
 }
 
@@ -205,7 +219,7 @@ function scheduleBotIfNeeded(room) {
   if (room.phase !== 'playing' || room.isTurnResolving || room.pendingQuiz) return;
   const active = room.players[room.turnIndex];
   if (!active) return;
-  if (active.isBot || !active.connected) {
+  if (active.isBot || active.botTakeover) {
     if (room.botTimer) clearTimeout(room.botTimer);
     room.botTimer = setTimeout(() => {
       executeTurn(room, active.id);
@@ -256,7 +270,7 @@ function executeTurn(room, playerId) {
         quiz: quizObj,
         room: serializeRoom(room)
       });
-      if (currentPlayer.isBot || !currentPlayer.connected) {
+      if (currentPlayer.isBot || currentPlayer.botTakeover) {
         scheduleOnlineBotQuiz(room);
       }
       return;
@@ -266,42 +280,110 @@ function executeTurn(room, playerId) {
   }, animDurationMs);
 }
 
-function removeSocketFromCurrentRoom(socket) {
+function removeSocketFromCurrentRoom(socket, isExplicitLeave = false) {
   const code = socket.data.roomCode;
+  const trackedPlayerId = socket.data.playerId || socket.id;
   if (!code) return;
   const room = rooms.get(code);
   socket.data.roomCode = null;
+  socket.data.playerId = null;
   if (!room) return;
 
   socket.leave(code);
 
-  const playerIdx = room.players.findIndex((p) => p.id === socket.id);
+  const playerIdx = room.players.findIndex((p) => p.id === trackedPlayerId);
   if (playerIdx === -1) return;
+  const player = room.players[playerIdx];
+
+  // Abaikan event disconnect terlambat dari socket lama yang sudah digantikan saat rejoin
+  if (!isExplicitLeave && player.socketId && player.socketId !== socket.id) {
+    return;
+  }
+
+  const prevTimer = room.disconnectTimers.get(player.id);
+  if (prevTimer) {
+    clearTimeout(prevTimer);
+    room.disconnectTimers.delete(player.id);
+  }
 
   if (room.phase === 'lobby') {
-    room.players.splice(playerIdx, 1);
+    if (isExplicitLeave) {
+      room.players.splice(playerIdx, 1);
+    } else {
+      player.connected = false;
+      player.disconnectedAt = Date.now();
+      const timer = setTimeout(() => {
+        if (!rooms.has(code) || room.phase !== 'lobby') return;
+        const idxNow = room.players.findIndex((p) => p.id === player.id);
+        if (idxNow !== -1 && !room.players[idxNow].connected) {
+          room.players.splice(idxNow, 1);
+          const leftHumans = room.players.filter((p) => !p.isBot && p.connected);
+          if (leftHumans.length === 0) {
+            clearRoomTimers(room);
+            rooms.delete(code);
+          } else {
+            if (room.hostId === player.id) room.hostId = leftHumans[0].id;
+            io.to(code).emit('room_updated', { room: serializeRoom(room) });
+          }
+        }
+      }, LOBBY_DISCONNECT_GRACE_MS);
+      room.disconnectTimers.set(player.id, timer);
+    }
   } else {
-    room.players[playerIdx].connected = false;
+    player.connected = false;
+    player.disconnectedAt = Date.now();
+    if (isExplicitLeave) {
+      player.botTakeover = true;
+    } else {
+      player.botTakeover = false;
+      const timer = setTimeout(() => {
+        room.disconnectTimers.delete(player.id);
+        if (!rooms.has(code) || room.phase !== 'playing') return;
+        if (!player.connected) {
+          player.botTakeover = true;
+          io.to(code).emit('room_updated', { room: serializeRoom(room) });
+          if (room.pendingQuiz && room.pendingQuiz.playerId === player.id) {
+            scheduleOnlineBotQuiz(room);
+          } else {
+            scheduleBotIfNeeded(room);
+          }
+        }
+      }, DISCONNECT_GRACE_MS);
+      room.disconnectTimers.set(player.id, timer);
+    }
   }
 
   const connectedHumans = room.players.filter((p) => !p.isBot && p.connected);
   if (connectedHumans.length === 0) {
-    clearRoomTimers(room);
+    if (room.turnTimer) {
+      clearTimeout(room.turnTimer);
+      room.turnTimer = null;
+    }
+    if (room.botTimer) {
+      clearTimeout(room.botTimer);
+      room.botTimer = null;
+    }
+    if (room.questTimer) {
+      clearTimeout(room.questTimer);
+      room.questTimer = null;
+    }
+    if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
     room.cleanupTimer = setTimeout(() => {
+      clearRoomTimers(room);
       rooms.delete(code);
-    }, 30000);
+    }, EMPTY_ROOM_CLEANUP_MS);
     return;
   }
 
-  // Migrasi host jika host keluar
-  if (room.hostId === socket.id) {
+  // Migrasi host jika host keluar / putus sementara
+  if (room.hostId === player.id) {
     room.hostId = connectedHumans[0].id;
   }
 
   io.to(code).emit('room_updated', { room: serializeRoom(room) });
 
-  if (room.phase === 'playing') {
-    if (room.pendingQuiz && room.pendingQuiz.playerId === socket.id) {
+  if (isExplicitLeave && room.phase === 'playing') {
+    if (room.pendingQuiz && room.pendingQuiz.playerId === player.id) {
       scheduleOnlineBotQuiz(room);
     } else {
       scheduleBotIfNeeded(room);
@@ -311,9 +393,10 @@ function removeSocketFromCurrentRoom(socket) {
 
 io.on('connection', (socket) => {
   socket.on('create_room', (payload = {}, cb) => {
-    removeSocketFromCurrentRoom(socket);
+    removeSocketFromCurrentRoom(socket, true);
 
     const code = generateRoomCode();
+    const playerId = generatePlayerId();
     const playerName = sanitizeName(payload.playerName, 'Pemain 1');
     const settings = {
       diceCount: payload.settings?.diceCount === 2 ? 2 : 1,
@@ -323,7 +406,7 @@ io.on('connection', (socket) => {
 
     const room = {
       code,
-      hostId: socket.id,
+      hostId: playerId,
       phase: 'lobby',
       settings,
       turnIndex: 0,
@@ -334,16 +417,20 @@ io.on('connection', (socket) => {
       botTimer: null,
       questTimer: null,
       cleanupTimer: null,
+      disconnectTimers: new Map(),
       players: []
     };
 
     const characterId = getAvailableCharacterId(room, payload.characterId);
     room.players.push({
-      id: socket.id,
+      id: playerId,
+      socketId: socket.id,
       name: playerName,
       characterId,
       isBot: false,
       connected: true,
+      disconnectedAt: null,
+      botTakeover: false,
       tile: 0,
       shield: false,
       consecutiveBonus: 0
@@ -352,9 +439,10 @@ io.on('connection', (socket) => {
     rooms.set(code, room);
     socket.join(code);
     socket.data.roomCode = code;
+    socket.data.playerId = playerId;
 
     if (typeof cb === 'function') {
-      cb({ ok: true, code, playerId: socket.id, room: serializeRoom(room) });
+      cb({ ok: true, code, playerId, room: serializeRoom(room) });
     }
   });
 
@@ -374,21 +462,25 @@ io.on('connection', (socket) => {
       return;
     }
 
-    removeSocketFromCurrentRoom(socket);
+    removeSocketFromCurrentRoom(socket, true);
     if (room.cleanupTimer) {
       clearTimeout(room.cleanupTimer);
       room.cleanupTimer = null;
     }
 
+    const playerId = generatePlayerId();
     const playerName = sanitizeName(payload.playerName, `Pemain ${room.players.length + 1}`);
     const characterId = getAvailableCharacterId(room, payload.characterId);
 
     room.players.push({
-      id: socket.id,
+      id: playerId,
+      socketId: socket.id,
       name: playerName,
       characterId,
       isBot: false,
       connected: true,
+      disconnectedAt: null,
+      botTakeover: false,
       tile: 0,
       shield: false,
       consecutiveBonus: 0
@@ -396,20 +488,92 @@ io.on('connection', (socket) => {
 
     socket.join(code);
     socket.data.roomCode = code;
+    socket.data.playerId = playerId;
 
     io.to(code).emit('room_updated', { room: serializeRoom(room) });
     if (typeof cb === 'function') {
-      cb({ ok: true, code, playerId: socket.id, room: serializeRoom(room) });
+      cb({ ok: true, code, playerId, room: serializeRoom(room) });
+    }
+  });
+
+  socket.on('rejoin_room', (payload = {}, cb) => {
+    const code = String(payload.code || '').trim().toUpperCase();
+    const playerId = String(payload.playerId || '').trim();
+    const room = rooms.get(code);
+    if (!room || !playerId) {
+      if (typeof cb === 'function') cb({ ok: false, error: 'Room atau sesi pemain sudah berakhir.' });
+      return;
+    }
+    const player = room.players.find((p) => p.id === playerId && !p.isBot);
+    if (!player) {
+      if (typeof cb === 'function') cb({ ok: false, error: 'Pemain tidak ditemukan di room ini.' });
+      return;
+    }
+
+    if (socket.data.roomCode && socket.data.roomCode !== code) {
+      removeSocketFromCurrentRoom(socket, true);
+    }
+
+    if (room.cleanupTimer) {
+      clearTimeout(room.cleanupTimer);
+      room.cleanupTimer = null;
+    }
+    const dTimer = room.disconnectTimers.get(player.id);
+    if (dTimer) {
+      clearTimeout(dTimer);
+      room.disconnectTimers.delete(player.id);
+    }
+
+    player.socketId = socket.id;
+    player.connected = true;
+    player.disconnectedAt = null;
+    const wasTakeover = Boolean(player.botTakeover);
+    player.botTakeover = false;
+
+    const active = room.players[room.turnIndex];
+    if (wasTakeover && active && active.id === player.id) {
+      if (room.botTimer) {
+        clearTimeout(room.botTimer);
+        room.botTimer = null;
+      }
+      if (room.pendingQuiz && room.pendingQuiz.playerId === player.id && !room.pendingQuiz.answerResult && room.questTimer) {
+        clearTimeout(room.questTimer);
+        room.questTimer = null;
+      }
+    }
+
+    socket.join(code);
+    socket.data.roomCode = code;
+    socket.data.playerId = player.id;
+
+    io.to(code).emit('room_updated', { room: serializeRoom(room) });
+
+    if (room.phase === 'playing') {
+      scheduleBotIfNeeded(room);
+    }
+
+    const pendingQuiz = room.pendingQuiz
+      ? {
+          playerId: room.pendingQuiz.playerId,
+          tile: room.pendingQuiz.tile,
+          quiz: room.pendingQuiz.quiz,
+          answerResult: room.pendingQuiz.answerResult || null
+        }
+      : null;
+
+    if (typeof cb === 'function') {
+      cb({ ok: true, code, playerId: player.id, room: serializeRoom(room), pendingQuiz });
     }
   });
 
   socket.on('leave_room', () => {
-    removeSocketFromCurrentRoom(socket);
+    removeSocketFromCurrentRoom(socket, true);
   });
 
   socket.on('update_settings', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId || room.phase !== 'lobby') return;
 
     if (payload.diceCount === 1 || payload.diceCount === 2) {
       room.settings.diceCount = payload.diceCount;
@@ -425,14 +589,15 @@ io.on('connection', (socket) => {
 
   socket.on('select_character', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
+    const playerId = socket.data.playerId;
     if (!room || room.phase !== 'lobby') return;
-    const player = room.players.find((p) => p.id === socket.id);
+    const player = room.players.find((p) => p.id === playerId);
     if (!player) return;
 
     const charId = payload.characterId;
     if (!BoardConfig.CHARACTERS.some((c) => c.id === charId)) return;
 
-    const takenBy = room.players.find((p) => p.id !== socket.id && p.characterId === charId);
+    const takenBy = room.players.find((p) => p.id !== playerId && p.characterId === charId);
     if (takenBy) {
       if (takenBy.isBot) {
         takenBy.characterId = player.characterId;
@@ -449,7 +614,8 @@ io.on('connection', (socket) => {
 
   socket.on('add_bot', () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId || room.phase !== 'lobby') return;
     if (room.players.length >= 4) return;
 
     const usedNames = new Set(room.players.map((p) => p.name));
@@ -458,10 +624,13 @@ io.on('connection', (socket) => {
 
     room.players.push({
       id: `bot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      socketId: null,
       name: botName,
       characterId,
       isBot: true,
       connected: true,
+      disconnectedAt: null,
+      botTakeover: false,
       tile: 0,
       shield: false,
       consecutiveBonus: 0
@@ -472,21 +641,28 @@ io.on('connection', (socket) => {
 
   socket.on('remove_player', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId || room.phase !== 'lobby') return;
     const targetId = payload.targetId;
-    if (!targetId || targetId === socket.id) return;
+    if (!targetId || targetId === playerId) return;
 
     const idx = room.players.findIndex((p) => p.id === targetId);
     if (idx === -1) return;
 
     const target = room.players[idx];
+    const dTimer = room.disconnectTimers.get(target.id);
+    if (dTimer) {
+      clearTimeout(dTimer);
+      room.disconnectTimers.delete(target.id);
+    }
     room.players.splice(idx, 1);
 
-    if (!target.isBot) {
-      const targetSocket = io.sockets.sockets.get(target.id);
+    if (!target.isBot && target.socketId) {
+      const targetSocket = io.sockets.sockets.get(target.socketId);
       if (targetSocket) {
         targetSocket.leave(room.code);
         targetSocket.data.roomCode = null;
+        targetSocket.data.playerId = null;
         targetSocket.emit('kicked_from_room');
       }
     }
@@ -496,7 +672,8 @@ io.on('connection', (socket) => {
 
   socket.on('start_game', () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id || room.phase !== 'lobby') return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId || room.phase !== 'lobby') return;
     if (room.players.length < 2) return;
 
     clearRoomTimers(room);
@@ -510,33 +687,47 @@ io.on('connection', (socket) => {
       p.tile = 0;
       p.shield = false;
       p.consecutiveBonus = 0;
+      p.botTakeover = false;
     }
 
     io.to(room.code).emit('game_started', { room: serializeRoom(room) });
     scheduleBotIfNeeded(room);
   });
 
-  socket.on('roll_dice', () => {
+  socket.on('roll_dice', (cb) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
-    executeTurn(room, socket.id);
+    const playerId = socket.data.playerId;
+    if (!room || !playerId) {
+      if (typeof cb === 'function') cb({ ok: false, reason: 'not_in_room' });
+      return;
+    }
+    const active = room.players[room.turnIndex];
+    if (room.phase !== 'playing' || room.isTurnResolving || room.pendingQuiz || !active || active.id !== playerId) {
+      if (typeof cb === 'function') cb({ ok: false, reason: 'not_ready', room: serializeRoom(room) });
+      return;
+    }
+    executeTurn(room, playerId);
+    if (typeof cb === 'function') cb({ ok: true });
   });
 
   socket.on('quiz_answer', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
-    applyOnlineQuizAnswer(room, socket.id, payload.selectedIdx);
+    const playerId = socket.data.playerId;
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== playerId) return;
+    applyOnlineQuizAnswer(room, playerId, payload.selectedIdx);
   });
 
   socket.on('quest_choose', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
-    applyOnlineQuizAnswer(room, socket.id, payload.choiceIdx);
+    const playerId = socket.data.playerId;
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== playerId) return;
+    applyOnlineQuizAnswer(room, playerId, payload.choiceIdx);
   });
 
   socket.on('quiz_execute', () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== socket.id) return;
+    const playerId = socket.data.playerId;
+    if (!room || !room.pendingQuiz || room.pendingQuiz.playerId !== playerId) return;
     if (!room.pendingQuiz.answerResult) return;
     if (room.questTimer) {
       clearTimeout(room.questTimer);
@@ -547,11 +738,12 @@ io.on('connection', (socket) => {
 
   socket.on('send_emote', (payload = {}) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
+    const playerId = socket.data.playerId;
+    if (!room || !playerId) return;
     const emote = BoardConfig.EMOTES.find((e) => e.id === payload.emoteId);
     if (!emote) return;
     io.to(room.code).emit('player_emote', {
-      playerId: socket.id,
+      playerId,
       emoteId: emote.id,
       emoji: emote.emoji,
       label: emote.label
@@ -560,7 +752,8 @@ io.on('connection', (socket) => {
 
   socket.on('rematch', () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id) return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId) return;
     clearRoomTimers(room);
 
     room.phase = 'playing';
@@ -572,6 +765,7 @@ io.on('connection', (socket) => {
       p.tile = 0;
       p.shield = false;
       p.consecutiveBonus = 0;
+      p.botTakeover = false;
     }
     io.to(room.code).emit('game_started', { room: serializeRoom(room) });
     scheduleBotIfNeeded(room);
@@ -579,7 +773,8 @@ io.on('connection', (socket) => {
 
   socket.on('back_to_lobby', () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id) return;
+    const playerId = socket.data.playerId;
+    if (!room || room.hostId !== playerId) return;
     clearRoomTimers(room);
 
     room.phase = 'lobby';
@@ -592,12 +787,14 @@ io.on('connection', (socket) => {
       p.tile = 0;
       p.shield = false;
       p.consecutiveBonus = 0;
+      p.botTakeover = false;
+      p.disconnectedAt = null;
     }
     io.to(room.code).emit('room_updated', { room: serializeRoom(room) });
   });
 
   socket.on('disconnect', () => {
-    removeSocketFromCurrentRoom(socket);
+    removeSocketFromCurrentRoom(socket, false);
   });
 });
 

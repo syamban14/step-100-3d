@@ -4,11 +4,41 @@ import { soundFX } from './audio.js';
 const BoardConfig = window.BoardConfig;
 const isStaticHost = window.location.hostname.endsWith('github.io') || typeof window.io !== 'function';
 const socket = !isStaticHost
-  ? window.io()
+  ? window.io({ reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 800, reconnectionDelayMax: 4000 })
   : {
+      connected: false,
+      connect() {},
       on() {},
       emit() {}
     };
+
+const ONLINE_SESSION_KEY = 'step100_online_session';
+
+function saveOnlineSession(code, playerId) {
+  if (typeof sessionStorage === 'undefined' || !code || !playerId) return;
+  try {
+    sessionStorage.setItem(ONLINE_SESSION_KEY, JSON.stringify({ code, playerId }));
+  } catch (_) {}
+}
+
+function clearOnlineSession() {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(ONLINE_SESSION_KEY);
+  } catch (_) {}
+}
+
+function loadOnlineSession() {
+  if (typeof sessionStorage === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(ONLINE_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.code && parsed?.playerId ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 // Elemen DOM Utama
 const el = {
@@ -119,10 +149,14 @@ const state = {
   // State Match Aktif (dipakai baik di Lokal maupun Online)
   room: null,
   myId: null,
+  onlineSession: null,
+  isConnected: !isStaticHost ? Boolean(socket.connected) : true,
+  isRejoining: false,
   isAnimating: false,
   isQuestOpen: false,
   pendingAnimPromise: Promise.resolve(),
   localBotTimer: null,
+  rollAckTimer: null,
   bannerTimer: null
 };
 
@@ -525,6 +559,9 @@ el.btnCreateRoom.addEventListener('click', () => {
     }
     state.mode = 'online';
     state.myId = res.playerId;
+    state.onlineSession = { code: res.code, playerId: res.playerId };
+    state.isConnected = true;
+    saveOnlineSession(res.code, res.playerId);
     state.room = res.room;
     renderLobby();
     showScreen('lobby');
@@ -550,6 +587,9 @@ el.btnJoinRoom.addEventListener('click', () => {
     }
     state.mode = 'online';
     state.myId = res.playerId;
+    state.onlineSession = { code: res.code, playerId: res.playerId };
+    state.isConnected = true;
+    saveOnlineSession(res.code, res.playerId);
     state.room = res.room;
     renderLobby();
     showScreen('lobby');
@@ -691,6 +731,97 @@ function renderLobby() {
   });
 }
 
+function attemptOnlineRejoin(sessionObj, isInitialLoad = false) {
+  if (isStaticHost || !sessionObj?.code || !sessionObj?.playerId || state.isRejoining) return;
+  state.isRejoining = true;
+  socket.emit('rejoin_room', { code: sessionObj.code, playerId: sessionObj.playerId }, (res) => {
+    state.isRejoining = false;
+    if (!res || !res.ok) {
+      clearOnlineSession();
+      if (!isInitialLoad && state.mode === 'online') {
+        resetToHome();
+        showHomeError(res?.error || 'Sesi room sudah berakhir.');
+      }
+      return;
+    }
+
+    state.mode = 'online';
+    state.myId = res.playerId;
+    state.onlineSession = { code: res.code, playerId: res.playerId };
+    state.isConnected = true;
+    saveOnlineSession(res.code, res.playerId);
+    state.room = res.room;
+    state.isAnimating = Boolean(res.room.isTurnResolving);
+
+    if (res.room.phase === 'lobby') {
+      el.modalQuest.classList.add('hidden');
+      el.modalVictory.classList.add('hidden');
+      state.isQuestOpen = false;
+      renderLobby();
+      showScreen('lobby');
+    } else if (res.room.phase === 'playing') {
+      if (el.screenHud.classList.contains('hidden')) {
+        enterMatchView();
+      } else {
+        const active = getActivePlayer();
+        scene3d.syncPlayers(res.room.players, active ? active.id : null, true);
+      }
+      if (res.pendingQuiz) {
+        openOnlineQuizModal(res.pendingQuiz.playerId, res.pendingQuiz.tile, res.pendingQuiz.quiz);
+        if (res.pendingQuiz.answerResult) {
+          revealOnlineQuizOutcome(res.pendingQuiz.playerId, res.pendingQuiz.answerResult);
+        }
+      } else {
+        el.modalQuest.classList.add('hidden');
+        state.isQuestOpen = false;
+      }
+      updateHudState();
+    } else if (res.room.phase === 'finished') {
+      if (el.screenHud.classList.contains('hidden')) {
+        enterMatchView();
+      }
+      scene3d.syncPlayers(res.room.players, res.room.winnerId, true);
+      updateHudState();
+      if (res.room.winnerId) showVictoryModal(res.room.winnerId);
+    }
+
+    if (!isInitialLoad) {
+      showBanner('✅ Tersambung kembali ke room!', 2400);
+    }
+  });
+}
+
+socket.on('disconnect', () => {
+  state.isConnected = false;
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
+  if (state.mode === 'online') {
+    updateHudState();
+    showBanner('📡 Koneksi terputus — menyambung ulang otomatis...', 4000);
+  }
+});
+
+socket.on('connect', () => {
+  state.isConnected = true;
+  if (state.mode === 'online' && state.onlineSession) {
+    attemptOnlineRejoin(state.onlineSession, false);
+  } else if (!state.mode) {
+    const saved = loadOnlineSession();
+    if (saved) attemptOnlineRejoin(saved, true);
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || state.mode !== 'online') return;
+  if (!socket.connected) {
+    socket.connect?.();
+  } else if (state.onlineSession) {
+    attemptOnlineRejoin(state.onlineSession, true);
+  }
+});
+
 socket.on('room_updated', ({ room }) => {
   if (state.mode !== 'online') return;
   state.room = room;
@@ -700,12 +831,18 @@ socket.on('room_updated', ({ room }) => {
     showScreen('lobby');
   } else {
     const active = getActivePlayer();
-    scene3d.syncPlayers(room.players, active ? active.id : null, false);
+    if (!state.isAnimating) {
+      scene3d.syncPlayers(room.players, active ? active.id : null, false);
+    }
     updateHudState();
   }
 });
 
 socket.on('game_started', ({ room }) => {
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
   state.room = room;
   state.isAnimating = false;
   state.isQuestOpen = false;
@@ -718,6 +855,10 @@ socket.on('game_started', ({ room }) => {
 });
 
 socket.on('turn_executed', ({ playerId, result }) => {
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
   if (!state.room) return;
   state.isAnimating = true;
   updateHudState();
@@ -763,6 +904,10 @@ socket.on('quiz_executed', ({ playerId, quizResult, room }) => {
 });
 
 socket.on('turn_ready', async ({ room }) => {
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
   await state.pendingAnimPromise;
   el.modalQuest.classList.add('hidden');
   state.isQuestOpen = false;
@@ -777,6 +922,10 @@ socket.on('turn_ready', async ({ room }) => {
 });
 
 socket.on('game_over', async ({ winnerId, room }) => {
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
   await state.pendingAnimPromise;
   el.modalQuest.classList.add('hidden');
   state.isQuestOpen = false;
@@ -838,6 +987,16 @@ function updateHudState() {
       BoardConfig.CHARACTERS.find((c) => c.id === p.characterId) || BoardConfig.CHARACTERS[0];
     const isAct = active && active.id === p.id;
 
+    const subLabel = p.isBot
+      ? 'Bot AI'
+      : p.botTakeover
+      ? 'Offline (Bot sementara)'
+      : p.connected === false
+      ? 'Menyambung ulang...'
+      : p.id === state.myId
+      ? 'Anda'
+      : 'Pemain';
+
     const card = document.createElement('div');
     card.className = `hud-player-card ${isAct ? 'active' : ''}`;
     card.dataset.playerId = p.id;
@@ -846,7 +1005,7 @@ function updateHudState() {
         <div class="hp-avatar" style="background:${charInfo.color}">${charInfo.badge}</div>
         <div style="min-width:0">
           <div class="hp-name">${p.name} ${p.shield ? '🛡️' : ''}</div>
-          <div class="hp-sub">${p.isBot ? 'Bot AI' : p.id === state.myId ? 'Anda' : 'Pemain'}</div>
+          <div class="hp-sub">${subLabel}</div>
         </div>
       </div>
       <div class="hp-tile">#${p.tile}</div>
@@ -854,18 +1013,29 @@ function updateHudState() {
     el.hudPlayers.appendChild(card);
   });
 
-  if (active) {
+  if (state.mode === 'online' && !state.isConnected) {
+    el.hudTurnLabel.textContent = '📡 Koneksi terputus — menyambung ulang...';
+  } else if (active) {
     el.hudTurnLabel.textContent = state.isQuestOpen
       ? `❓ ${active.name} menjawab Kuis Mystery...`
       : state.isAnimating
       ? `⏳ ${active.name} bergerak...`
+      : active.botTakeover
+      ? `🤖 Giliran: ${active.name} (Bot sementara)`
       : `🎯 Giliran: ${active.name}`;
   }
 
   let canRoll = false;
-  if (state.room.phase === 'playing' && !state.isAnimating && !state.isQuestOpen && active && !active.isBot) {
+  if (
+    state.room.phase === 'playing' &&
+    !state.isAnimating &&
+    !state.isQuestOpen &&
+    active &&
+    !active.isBot &&
+    !active.botTakeover
+  ) {
     if (state.mode === 'local') canRoll = true;
-    else if (state.mode === 'online' && active.id === state.myId) canRoll = true;
+    else if (state.mode === 'online' && state.isConnected && active.id === state.myId) canRoll = true;
   }
   el.btnRollDice.disabled = !canRoll;
 }
@@ -1169,8 +1339,38 @@ el.btnRollDice.addEventListener('click', () => {
   if (state.mode === 'local') {
     executeLocalTurn();
   } else if (state.mode === 'online') {
+    if (!socket.connected) {
+      showBanner('📡 Koneksi terputus — menyambung ulang...', 2200);
+      socket.connect?.();
+      return;
+    }
     el.btnRollDice.disabled = true;
-    socket.emit('roll_dice');
+    if (state.rollAckTimer) clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = setTimeout(() => {
+      state.rollAckTimer = null;
+      if (state.mode === 'online' && !state.isAnimating && !state.isQuestOpen) {
+        if (state.onlineSession) attemptOnlineRejoin(state.onlineSession, false);
+        else updateHudState();
+      }
+    }, 4000);
+
+    socket.emit('roll_dice', (res) => {
+      if (state.rollAckTimer) {
+        clearTimeout(state.rollAckTimer);
+        state.rollAckTimer = null;
+      }
+      if (res && !res.ok) {
+        if (res.reason === 'not_in_room' && state.onlineSession) {
+          attemptOnlineRejoin(state.onlineSession, false);
+          return;
+        }
+        if (res.room) {
+          state.room = res.room;
+          state.isAnimating = Boolean(res.room.isTurnResolving);
+        }
+        updateHudState();
+      }
+    });
   }
 });
 
@@ -1243,9 +1443,16 @@ el.btnHudExit.addEventListener('click', () => {
 
 function resetToHome() {
   if (state.localBotTimer) clearTimeout(state.localBotTimer);
+  if (state.rollAckTimer) {
+    clearTimeout(state.rollAckTimer);
+    state.rollAckTimer = null;
+  }
+  clearOnlineSession();
   state.mode = null;
   state.room = null;
   state.myId = null;
+  state.onlineSession = null;
+  state.isRejoining = false;
   state.isAnimating = false;
   state.isQuestOpen = false;
   el.modalQuest.classList.add('hidden');
