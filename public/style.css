@@ -1136,3 +1136,33 @@ input[type='text']:focus {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* Mode Grafis Adaptif: Matikan/kurangi backdrop-filter blur di HP & PC RAM ringan */
+body.gfx-medium .modal-backdrop,
+body.gfx-medium .glass-card,
+body.gfx-medium .glass-pill,
+body.gfx-medium .btn-hud,
+body.gfx-medium .hud-players,
+body.gfx-medium .hud-log-panel,
+body.gfx-medium .emote-bar,
+body.gfx-medium .turn-dock {
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+body.gfx-low .modal-backdrop,
+body.gfx-low .glass-card,
+body.gfx-low .glass-pill,
+body.gfx-low .btn-hud,
+body.gfx-low .hud-players,
+body.gfx-low .hud-log-panel,
+body.gfx-low .emote-bar,
+body.gfx-low .turn-dock {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: rgba(15, 23, 42, 0.93);
+}
+
+body.gfx-low .modal-backdrop {
+  background: rgba(6, 10, 22, 0.84);
+}

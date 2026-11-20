@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const BoardConfig = window.BoardConfig;
 
@@ -26,10 +27,26 @@ function easeInOutQuad(t) {
 }
 
 export class GameScene3D {
-  constructor(container, overlayLayer) {
+  static detectRecommendedQuality() {
+    if (typeof navigator === 'undefined' || typeof window === 'undefined') return 'high';
+    const ua = navigator.userAgent || '';
+    const isMobile =
+      /Android|iPhone|iPad|iPod|Mobile/i.test(ua) ||
+      (window.innerWidth <= 900 && ('ontouchstart' in window || navigator.maxTouchPoints > 0));
+    const mem = navigator.deviceMemory;
+    const cores = navigator.hardwareConcurrency;
+    if (isMobile || (mem && mem <= 4) || (cores && cores <= 4)) return 'low';
+    if ((mem && mem < 8) || (cores && cores <= 6)) return 'medium';
+    return 'high';
+  }
+
+  constructor(container, overlayLayer, options = {}) {
     this.container = container;
     this.overlayLayer = overlayLayer;
 
+    this.quality = ['high', 'medium', 'low'].includes(options.quality)
+      ? options.quality
+      : GameScene3D.detectRecommendedQuality();
     this.theme = 'day';
     this.boardStyle = 'mountain';
     this.cameraMode = 'overview'; // 'overview' | 'tpp' | 'fpp' | 'top'
@@ -47,13 +64,45 @@ export class GameScene3D {
     this.tppRaycaster = new THREE.Raycaster();
     this.tppColliders = [];
     this.mountainTreeMeshes = [];
+    this.mountainTreeInstances = [];
+    this.mountainTilePositions = [];
     this._treeWorldPos = new THREE.Vector3();
+    this._zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+    this._tppFrame = 0;
+    this._tppCachedSafeDist = null;
+    this._tppLastRayPos = new THREE.Vector3(1e9, 1e9, 1e9);
+
+    // Pre-allocated scratch vectors/colors untuk mencegah GC pause tiap frame
+    this._vFwd = new THREE.Vector3();
+    this._vRight = new THREE.Vector3();
+    this._vShoulder = new THREE.Vector3();
+    this._vDesired = new THREE.Vector3();
+    this._vCamVec = new THREE.Vector3();
+    this._vLookDir = new THREE.Vector3();
+    this._vLookTarget = new THREE.Vector3();
+    this._vProj = new THREE.Vector3();
+    this._vFocus = new THREE.Vector3();
+    this._vSkyOrigin = new THREE.Vector3();
+    this._vDown = new THREE.Vector3(0, -1, 0);
+    this._cBaseSky = new THREE.Color();
+    this._cBaseFog = new THREE.Color();
+    this._cAbyss = new THREE.Color('#040d12');
+    this._cBaseHemi = new THREE.Color();
+    this._cTealTint = new THREE.Color('#2dd4bf');
+
     this.wildernessGroup = null;
     this.wildernessTreesGroup = null;
+    this.wildernessTreeInst = null;
     this.wildernessZoneGroups = [];
     this.wildernessZoneFireflies = [];
     this.wildernessLights = [];
     this.wildernessBlend = 0;
+
+    this.classicBuilt = false;
+    this.mountainBuilt = false;
+    this.mysteryTilesVisible = true;
+    this.oceanMat = null;
+    this.oceanMesh = null;
 
     this.pawns = new Map();
     this.pawnTargets = new Map();
@@ -82,22 +131,17 @@ export class GameScene3D {
 
     this.initRendererAndScene();
     this.initLights();
+    this.initStarField();
 
     this.classicGroup = new THREE.Group();
     this.mountainGroup = new THREE.Group();
     this.scene.add(this.classicGroup);
     this.scene.add(this.mountainGroup);
 
-    this.buildEnvironment();
-    this.buildBoard();
-    this.buildLadders();
-    this.buildSnakes();
-    this.buildMysteryCrystals();
-    this.buildMountainMode();
     this.buildDice();
 
     this.setBoardStyle(this.boardStyle);
-    this.setTheme('day');
+    this.setQuality(this.quality);
 
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener('resize', this.handleResize);
@@ -109,7 +153,7 @@ export class GameScene3D {
   initRendererAndScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#74ccf4');
-    this.scene.fog = new THREE.FogExp2('#8cd9fa', 0.0095);
+    this.scene.fog = new THREE.FogExp2('#8cd9fa', 0.0085);
 
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
@@ -117,10 +161,13 @@ export class GameScene3D {
     this.camera = new THREE.PerspectiveCamera(46, w / h, 0.1, 260);
     this.camera.position.set(0, 22, 29);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: this.quality !== 'low',
+      powerPreference: 'high-performance'
+    });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = this.quality !== 'low';
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -186,6 +233,81 @@ export class GameScene3D {
     this.fillLight = new THREE.DirectionalLight('#a6d8ff', 0.45);
     this.fillLight.position.set(-16, 12, -14);
     this.scene.add(this.fillLight);
+  }
+
+  initStarField() {
+    const starCount = 320;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.42;
+      const r = 85 + Math.random() * 25;
+      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = r * Math.cos(phi) + 10;
+      starPositions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    this.starMat = new THREE.PointsMaterial({ color: '#ffffff', size: 0.7, transparent: true, opacity: 0 });
+    this.starField = new THREE.Points(starGeo, this.starMat);
+    this.scene.add(this.starField);
+  }
+
+  setQuality(level) {
+    this.quality = ['high', 'medium', 'low'].includes(level) ? level : 'high';
+    this.applyQualitySettings();
+    return this.quality;
+  }
+
+  applyQualitySettings() {
+    if (!this.renderer || !this.dirLight) return;
+    const q = this.quality;
+    const dpr = window.devicePixelRatio || 1;
+    const pixelRatio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.35) : 1;
+    this.renderer.setPixelRatio(pixelRatio);
+
+    const w = this.container.clientWidth || window.innerWidth;
+    const h = this.container.clientHeight || window.innerHeight;
+    this.renderer.setSize(w, h);
+
+    const shadowsOn = q !== 'low';
+    const mapSize = q === 'high' ? 2048 : 1024;
+    this.renderer.shadowMap.enabled = shadowsOn;
+    this.dirLight.castShadow = shadowsOn;
+
+    if (this.dirLight.shadow.mapSize.width !== mapSize) {
+      this.dirLight.shadow.mapSize.set(mapSize, mapSize);
+      if (this.dirLight.shadow.map) {
+        this.dirLight.shadow.map.dispose();
+        this.dirLight.shadow.map = null;
+      }
+    }
+    this.renderer.shadowMap.needsUpdate = shadowsOn;
+
+    if (this.wildernessTreeInst) {
+      this.wildernessTreeInst.castShadow = q === 'high';
+    }
+    this.setTheme(this.theme);
+  }
+
+  ensureClassicBuilt() {
+    if (this.classicBuilt) return;
+    this.classicBuilt = true;
+    this.buildEnvironment();
+    this.buildBoard();
+    this.buildLadders();
+    this.buildSnakes();
+    this.buildMysteryCrystals();
+    this.setMysteryVisible(this.mysteryTilesVisible);
+    this.setTheme(this.theme);
+  }
+
+  ensureMountainBuilt() {
+    if (this.mountainBuilt) return;
+    this.mountainBuilt = true;
+    this.buildMountainMode();
+    this.setMysteryVisible(this.mysteryTilesVisible);
+    this.setTheme(this.theme);
   }
 
   buildEnvironment() {
@@ -299,23 +421,6 @@ export class GameScene3D {
       const torch = this.createTorch(x, y, z);
       this.classicGroup.add(torch);
     });
-
-    // Bintang untuk tema malam
-    const starCount = 320;
-    const starPositions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.42;
-      const r = 85 + Math.random() * 25;
-      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      starPositions[i * 3 + 1] = r * Math.cos(phi) + 10;
-      starPositions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
-    }
-    const starGeo = new THREE.BufferGeometry();
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-    this.starMat = new THREE.PointsMaterial({ color: '#ffffff', size: 0.7, transparent: true, opacity: 0 });
-    this.starField = new THREE.Points(starGeo, this.starMat);
-    this.scene.add(this.starField);
   }
 
   createPalmTree(scale = 1, rotY = 0) {
@@ -713,91 +818,239 @@ export class GameScene3D {
   }
 
   setMysteryVisible(visible) {
+    this.mysteryTilesVisible = Boolean(visible);
     this.mysteryMeshes.forEach((m) => {
-      m.visible = visible;
+      m.visible = this.mysteryTilesVisible;
     });
     this.mountainMysteryMeshes.forEach((m) => {
-      m.visible = visible;
+      m.visible = this.mysteryTilesVisible;
     });
   }
 
-  createMountainBadgeTexture(tileNum) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 96;
-    canvas.height = 96;
-    const ctx = canvas.getContext('2d');
-
-    ctx.clearRect(0, 0, 96, 96);
-    let fill = 'rgba(15, 23, 42, 0.72)';
-    let stroke = '#e2e8f0';
-    let text = '#ffffff';
-
-    if (tileNum === 1) {
-      fill = '#15803d';
-      stroke = '#86efac';
-    } else if (tileNum === 100) {
-      fill = '#ca8a04';
-      stroke = '#fef08a';
-    } else if (BoardConfig.LADDERS[tileNum]) {
-      fill = '#065f46';
-      stroke = '#6ee7b7';
-    } else if (BoardConfig.STREAMS[tileNum]) {
-      fill = '#0369a1';
-      stroke = '#7dd3fc';
-    } else if (BoardConfig.LANDSLIDES[tileNum]) {
-      fill = '#9a3412';
-      stroke = '#fdba74';
-    } else if (BoardConfig.MYSTERY_TILES.includes(tileNum)) {
-      fill = '#6b21a8';
-      stroke = '#d8b4fe';
-    }
-
-    ctx.beginPath();
-    ctx.arc(48, 48, 43, 0, Math.PI * 2);
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.lineWidth = 6;
-    ctx.strokeStyle = stroke;
-    ctx.stroke();
-
-    ctx.fillStyle = text;
+  buildMountainTileBadges() {
+    const cellSize = 96;
+    const cols = 10;
+    const atlas = document.createElement('canvas');
+    atlas.width = cellSize * cols;
+    atlas.height = cellSize * cols;
+    const ctx = atlas.getContext('2d');
+    ctx.clearRect(0, 0, atlas.width, atlas.height);
     ctx.font = 'bold 40px system-ui, -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(tileNum), 48, 50);
 
-    const tex = new THREE.CanvasTexture(canvas);
+    const baseGeo = new THREE.CircleGeometry(0.28, 12);
+    baseGeo.rotateX(-Math.PI / 2);
+    const geos = [];
+
+    for (let tile = 1; tile <= 100; tile++) {
+      const idx = tile - 1;
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const ox = col * cellSize;
+      const oy = row * cellSize;
+
+      let fill = 'rgba(15, 23, 42, 0.72)';
+      let stroke = '#e2e8f0';
+      if (tile === 1) {
+        fill = '#15803d';
+        stroke = '#86efac';
+      } else if (tile === 100) {
+        fill = '#ca8a04';
+        stroke = '#fef08a';
+      } else if (BoardConfig.LADDERS[tile]) {
+        fill = '#065f46';
+        stroke = '#6ee7b7';
+      } else if (BoardConfig.STREAMS[tile]) {
+        fill = '#0369a1';
+        stroke = '#7dd3fc';
+      } else if (BoardConfig.LANDSLIDES[tile]) {
+        fill = '#9a3412';
+        stroke = '#fdba74';
+      } else if (BoardConfig.MYSTERY_TILES.includes(tile)) {
+        fill = '#6b21a8';
+        stroke = '#d8b4fe';
+      }
+
+      ctx.beginPath();
+      ctx.arc(ox + 48, oy + 48, 43, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(String(tile), ox + 48, oy + 50);
+
+      const pos = this.mountainTilePositions[tile] || BoardConfig.tileToMountainWorld(tile);
+      const g = baseGeo.clone();
+      g.translate(pos.x, pos.y + 0.02, pos.z);
+      const uv = g.attributes.uv;
+      const uOff = col * 0.1;
+      const vOff = (9 - row) * 0.1;
+      for (let i = 0; i < uv.count; i++) {
+        uv.setXY(i, uOff + uv.getX(i) * 0.1, vOff + uv.getY(i) * 0.1);
+      }
+      geos.push(g);
+    }
+
+    baseGeo.dispose();
+    const mergedGeo = mergeGeometries(geos, false);
+    geos.forEach((g) => g.dispose());
+
+    const tex = new THREE.CanvasTexture(atlas);
     tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
+    tex.anisotropy = this.quality === 'low' ? 1 : 4;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.05 });
+    const badgesMesh = new THREE.Mesh(mergedGeo, mat);
+    badgesMesh.name = 'MountainTileBadgesMerged';
+    this.mountainGroup.add(badgesMesh);
+  }
+
+  getApproxMountainGroundY(x, z) {
+    if (!this.mountainTilePositions.length) return 0;
+    let bestD2 = Infinity;
+    let bestY = 0;
+    for (let i = 0; i < this.mountainTilePositions.length; i++) {
+      const p = this.mountainTilePositions[i];
+      const dx = p.x - x;
+      const dz = p.z - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestY = p.y;
+      }
+    }
+    return bestD2 < 25 ? bestY : 0;
   }
 
   registerTppColliders(gltfScene) {
+    let foundTerrain = false;
     gltfScene.traverse((child) => {
-      if (child.isMesh) {
+      if (child.isMesh && child.name === 'MountainTerrain') {
         const mats = Array.isArray(child.material) ? child.material : [child.material];
         mats.forEach((m) => {
           if (m) m.side = THREE.DoubleSide;
         });
         this.tppColliders.push(child);
+        foundTerrain = true;
       }
     });
+    if (!foundTerrain) {
+      gltfScene.traverse((child) => {
+        if (child.isMesh) {
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          mats.forEach((m) => {
+            if (m) m.side = THREE.DoubleSide;
+          });
+          this.tppColliders.push(child);
+        }
+      });
+    }
   }
 
   prepareLoadedGltf(gltfScene) {
     gltfScene.traverse((child) => {
       if (child.isMesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
+        const noCast = /Glass|Flame|Orb|Mushroom/i.test(child.name || '');
+        child.castShadow = !noCast;
+        child.receiveShadow = !noCast;
         if (child.geometry?.attributes?.color && child.material) {
-          child.material.vertexColors = true;
-          child.material.needsUpdate = true;
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          mats.forEach((m) => {
+            if (m) {
+              m.vertexColors = true;
+              m.needsUpdate = true;
+            }
+          });
         }
       }
     });
     return gltfScene;
   }
 
+  buildInstancedFromGltf(gltfScene, options = {}) {
+    const {
+      collectTrees = false,
+      castShadow = true,
+      receiveShadow = true,
+      skipCastPattern = /Glass|Flame|Orb|Mushroom/i
+    } = options;
+    const outGroup = new THREE.Group();
+    gltfScene.updateMatrixWorld(true);
+
+    const groups = new Map();
+    gltfScene.traverse((child) => {
+      if (!child.isMesh || !child.geometry || !child.material) return;
+      const matKey = Array.isArray(child.material)
+        ? child.material.map((m) => m.uuid).join(',')
+        : child.material.uuid;
+      const key = `${child.geometry.uuid}:${matKey}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(child);
+    });
+
+    groups.forEach((items) => {
+      const sample = items[0];
+      const geo = sample.geometry;
+      const mat = sample.material;
+      const hasVertexColors = Boolean(geo.attributes?.color);
+      if (hasVertexColors && mat) {
+        const mats = Array.isArray(mat) ? mat : [mat];
+        mats.forEach((m) => {
+          if (m) {
+            m.vertexColors = true;
+            m.needsUpdate = true;
+          }
+        });
+      }
+      const noCast = skipCastPattern.test(sample.name || '');
+
+      if (items.length === 1) {
+        sample.matrixWorld.decompose(sample.position, sample.quaternion, sample.scale);
+        sample.castShadow = castShadow && !noCast;
+        sample.receiveShadow = receiveShadow && !noCast;
+        outGroup.add(sample);
+        if (collectTrees && /Tree/i.test(sample.name || '')) {
+          this.mountainTreeMeshes.push(sample);
+        }
+        return;
+      }
+
+      const inst = new THREE.InstancedMesh(geo, mat, items.length);
+      inst.name = `${sample.name || 'Instanced'}_Batch`;
+      inst.castShadow = castShadow && !noCast;
+      inst.receiveShadow = receiveShadow && !noCast;
+      const isTreeGroup = collectTrees && items.some((it) => /Tree/i.test(it.name || ''));
+
+      for (let i = 0; i < items.length; i++) {
+        const m = items[i];
+        inst.setMatrixAt(i, m.matrixWorld);
+        if (isTreeGroup) {
+          this.mountainTreeInstances.push({
+            instMesh: inst,
+            index: i,
+            worldPos: new THREE.Vector3().setFromMatrixPosition(m.matrixWorld),
+            origMatrix: m.matrixWorld.clone(),
+            hidden: false
+          });
+        }
+      }
+      inst.instanceMatrix.needsUpdate = true;
+      inst.computeBoundingSphere();
+      outGroup.add(inst);
+    });
+
+    return outGroup;
+  }
+
   buildMountainMode() {
+    this.mountainTilePositions = [];
+    for (let tile = 0; tile <= 100; tile++) {
+      this.mountainTilePositions.push(BoardConfig.tileToMountainWorld(tile));
+    }
+
     // Alas lembah hijau luas di sekitar kaki gunung
     this.valleyMat = new THREE.MeshStandardMaterial({
       color: '#46883f',
@@ -820,17 +1073,8 @@ export class GameScene3D {
     dicePad.castShadow = true;
     this.mountainGroup.add(dicePad);
 
-    // Plat nomor 1-100 di atas batu pijakan jalan setapak gunung
-    const discGeo = new THREE.CircleGeometry(0.28, 12);
-    for (let tile = 1; tile <= 100; tile++) {
-      const pos = BoardConfig.tileToMountainWorld(tile);
-      const tex = this.createMountainBadgeTexture(tile);
-      const discMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
-      const disc = new THREE.Mesh(discGeo, discMat);
-      disc.rotation.x = -Math.PI / 2;
-      disc.position.set(pos.x, pos.y + 0.02, pos.z);
-      this.mountainGroup.add(disc);
-    }
+    // Plat nomor 1-100 di atas batu pijakan jalan setapak gunung (1 atlas + 1 merged mesh)
+    this.buildMountainTileBadges();
 
     // Kurva panjat tangga 1:1 mengikuti posisi anak tangga tinggi di cliff_ladders.glb
     const MOUNTAIN_LADDER_DATA = {
@@ -1228,9 +1472,10 @@ export class GameScene3D {
       }
     });
 
-    // Lampu Mode Malam untuk Api Unggun Basecamp & 8 Lentera Jalur
+    // Lampu Mode Malam untuk Api Unggun Basecamp & 8 Lentera Jalur (matikan saat siang agar shader ringan)
     const campLight = new THREE.PointLight('#ff9f43', 0, 14, 1.4);
     campLight.position.set(-11.7, 1.5, 14.3);
+    campLight.visible = false;
     this.mountainGroup.add(campLight);
     this.mountainLights.push(campLight);
 
@@ -1239,6 +1484,7 @@ export class GameScene3D {
       const outDir = tp.x >= 0 ? 0.95 : -0.95;
       const lLight = new THREE.PointLight('#fbbf24', 0, 9.5, 1.6);
       lLight.position.set(tp.x + outDir, tp.y + 1.0, tp.z + 0.42);
+      lLight.visible = false;
       this.mountainGroup.add(lLight);
       this.mountainLights.push(lLight);
     });
@@ -1260,13 +1506,12 @@ export class GameScene3D {
       this.mountainGroup.add(this.prepareLoadedGltf(gltf.scene));
     });
     loader.load('./assets/models/mountain_scenery.glb', (gltf) => {
-      const root = this.prepareLoadedGltf(gltf.scene);
-      root.traverse((child) => {
-        if (child.isMesh && (child.name.includes('Tree') || child.parent?.name?.includes('Tree'))) {
-          this.mountainTreeMeshes.push(child);
-        }
+      const batched = this.buildInstancedFromGltf(gltf.scene, {
+        collectTrees: true,
+        castShadow: true,
+        receiveShadow: true
       });
-      this.mountainGroup.add(root);
+      this.mountainGroup.add(batched);
     });
 
     // Grup Hutan Belantara & Kantong Teduh (hanya aktif di TPP/FPP; jamur & kunang hanya di zona aktif)
@@ -1288,17 +1533,59 @@ export class GameScene3D {
     this.wildernessZoneFireflies = [];
 
     loader.load('./assets/models/wilderness_forest.glb', (gltf) => {
-      const wfRoot = this.prepareLoadedGltf(gltf.scene);
-      [...wfRoot.children].forEach((child) => {
+      gltf.scene.updateMatrixWorld(true);
+      const treeItems = [];
+      const mushBuckets = [[], [], []];
+      gltf.scene.traverse((child) => {
+        if (!child.isMesh) return;
         const name = child.name || '';
         if (name.startsWith('WildernessTree_')) {
-          this.wildernessTreesGroup.add(child);
-          return;
+          treeItems.push(child);
+        } else {
+          const match = /_z([012])_/.exec(name);
+          const zIdx = match ? Number(match[1]) : 0;
+          (mushBuckets[zIdx] || mushBuckets[0]).push(child);
         }
-        const match = /_z([012])_/.exec(name);
-        const zIdx = match ? Number(match[1]) : 0;
-        const targetGroup = this.wildernessZoneGroups[zIdx] || this.wildernessZoneGroups[0];
-        targetGroup.add(child);
+      });
+
+      if (treeItems.length > 0) {
+        const sample = treeItems[0];
+        const mat = sample.material;
+        if (sample.geometry.attributes?.color && mat) {
+          mat.vertexColors = true;
+          mat.needsUpdate = true;
+        }
+        const treeInst = new THREE.InstancedMesh(sample.geometry, mat, treeItems.length);
+        treeInst.name = 'WildernessCanopyTree_Instanced';
+        treeInst.castShadow = this.quality === 'high';
+        treeInst.receiveShadow = true;
+        for (let i = 0; i < treeItems.length; i++) {
+          treeInst.setMatrixAt(i, treeItems[i].matrixWorld);
+        }
+        treeInst.instanceMatrix.needsUpdate = true;
+        treeInst.computeBoundingSphere();
+        this.wildernessTreeInst = treeInst;
+        this.wildernessTreesGroup.add(treeInst);
+      }
+
+      mushBuckets.forEach((items, zIdx) => {
+        if (!items.length) return;
+        const sample = items[0];
+        const mat = sample.material;
+        if (sample.geometry.attributes?.color && mat) {
+          mat.vertexColors = true;
+          mat.needsUpdate = true;
+        }
+        const mushInst = new THREE.InstancedMesh(sample.geometry, mat, items.length);
+        mushInst.name = `WildernessGlowMushroom_z${zIdx}_Instanced`;
+        mushInst.castShadow = false;
+        mushInst.receiveShadow = false;
+        for (let i = 0; i < items.length; i++) {
+          mushInst.setMatrixAt(i, items[i].matrixWorld);
+        }
+        mushInst.instanceMatrix.needsUpdate = true;
+        mushInst.computeBoundingSphere();
+        this.wildernessZoneGroups[zIdx].add(mushInst);
       });
     });
 
@@ -1306,6 +1593,7 @@ export class GameScene3D {
       const wp = BoardConfig.tileToMountainWorld(wt);
       const wLight = new THREE.PointLight('#2dd4bf', 0, 9.5, 1.4);
       wLight.position.set(wp.x, wp.y + 1.85, wp.z);
+      wLight.visible = false;
       this.wildernessZoneGroups[zIdx].add(wLight);
       this.wildernessLights.push(wLight);
     });
@@ -1366,6 +1654,7 @@ export class GameScene3D {
           floatGroup.add(cry);
         }
         wrapper.add(floatGroup);
+        wrapper.visible = this.mysteryTilesVisible;
         this.mountainMysteryMeshes.push(wrapper);
         this.mountainGroup.add(wrapper);
       });
@@ -1879,8 +2168,45 @@ export class GameScene3D {
   }
 
   updateTppTreeOcclusion(camPos, pawnPos) {
+    const isTppMountain =
+      this.cameraMode === 'tpp' && this.boardStyle === 'mountain' && Boolean(camPos && pawnPos);
+
+    if (this.mountainTreeInstances.length > 0) {
+      const vx = isTppMountain ? pawnPos.x - camPos.x : 0;
+      const vz = isTppMountain ? pawnPos.z - camPos.z : 0;
+      const len2 = vx * vx + vz * vz;
+      let dirtyInst = null;
+
+      for (let i = 0; i < this.mountainTreeInstances.length; i++) {
+        const item = this.mountainTreeInstances[i];
+        let hide = false;
+        if (isTppMountain) {
+          const wx = item.worldPos.x - camPos.x;
+          const wz = item.worldPos.z - camPos.z;
+          const distCam = Math.hypot(wx, wz);
+          hide = distCam < 1.45;
+          if (!hide && len2 > 0.01) {
+            const t = (wx * vx + wz * vz) / len2;
+            if (t > -0.15 && t < 0.92) {
+              const px = camPos.x + t * vx;
+              const pz = camPos.z + t * vz;
+              if (Math.hypot(item.worldPos.x - px, item.worldPos.z - pz) < 1.02) hide = true;
+            }
+          }
+        }
+        if (item.hidden !== hide) {
+          item.hidden = hide;
+          item.instMesh.setMatrixAt(item.index, hide ? this._zeroMatrix : item.origMatrix);
+          if (dirtyInst && dirtyInst !== item.instMesh) {
+            dirtyInst.instanceMatrix.needsUpdate = true;
+          }
+          item.instMesh.instanceMatrix.needsUpdate = true;
+          dirtyInst = item.instMesh;
+        }
+      }
+    }
+
     if (!this.mountainTreeMeshes.length) return;
-    const isTppMountain = this.cameraMode === 'tpp' && this.boardStyle === 'mountain' && Boolean(camPos && pawnPos);
     if (!isTppMountain) {
       for (const m of this.mountainTreeMeshes) m.visible = true;
       return;
@@ -2246,47 +2572,63 @@ export class GameScene3D {
     const isNight = this.theme === 'night';
 
     if (isNight) {
-      this.scene.background = new THREE.Color('#090f24');
-      this.scene.fog = new THREE.FogExp2('#0d1633', 0.011);
+      this.scene.background.set('#090f24');
+      if (this.scene.fog) {
+        this.scene.fog.color.set('#0d1633');
+        this.scene.fog.density = 0.011;
+      }
       this.hemiLight.color.set('#4c6ef5');
       this.hemiLight.groundColor.set('#142038');
       this.hemiLight.intensity = 0.55;
       this.dirLight.color.set('#9bbcff');
       this.dirLight.intensity = 0.65;
       this.fillLight.intensity = 0.25;
-      this.oceanMat.color.set('#072b4d');
+      if (this.oceanMat) this.oceanMat.color.set('#072b4d');
       if (this.valleyMat) this.valleyMat.color.set('#1a3324');
-      this.starMat.opacity = 0.9;
+      if (this.starMat) this.starMat.opacity = 0.9;
     } else {
-      this.scene.background = new THREE.Color('#74ccf4');
-      this.scene.fog = new THREE.FogExp2('#8cd9fa', 0.0085);
+      this.scene.background.set('#74ccf4');
+      if (this.scene.fog) {
+        this.scene.fog.color.set('#8cd9fa');
+        this.scene.fog.density = 0.0085;
+      }
       this.hemiLight.color.set('#ffffff');
       this.hemiLight.groundColor.set('#3a7d44');
       this.hemiLight.intensity = 0.88;
       this.dirLight.color.set('#fff5db');
       this.dirLight.intensity = 1.55;
       this.fillLight.intensity = 0.45;
-      this.oceanMat.color.set('#0e8dc7');
+      if (this.oceanMat) this.oceanMat.color.set('#0e8dc7');
       if (this.valleyMat) this.valleyMat.color.set('#46883f');
-      this.starMat.opacity = 0;
+      if (this.starMat) this.starMat.opacity = 0;
     }
 
     this.torchFlames.forEach((f) => {
       f.visible = isNight;
     });
-    this.torchLights.forEach((l) => {
-      l.intensity = isNight ? 2.8 : 0;
+    this.torchLights.forEach((l, idx) => {
+      const on = isNight && (this.quality !== 'low' || idx === 0);
+      l.intensity = on ? 2.8 : 0;
+      l.visible = on;
     });
     this.mountainLights.forEach((l, idx) => {
-      l.intensity = isNight ? (idx === 0 ? 4.2 : 3.0) : 0;
+      const on = isNight && (this.quality !== 'low' || idx === 0);
+      l.intensity = on ? (idx === 0 ? 4.2 : 3.0) : 0;
+      l.visible = on;
     });
   }
 
   setBoardStyle(style) {
     this.boardStyle = style === 'classic' ? 'classic' : 'mountain';
     const isMountain = this.boardStyle === 'mountain';
+    if (isMountain) {
+      this.ensureMountainBuilt();
+    } else {
+      this.ensureClassicBuilt();
+    }
     this.classicGroup.visible = !isMountain;
     this.mountainGroup.visible = isMountain;
+    this._tppCachedSafeDist = null;
     this.diceMeshes.forEach((d) => {
       d.visible = false;
     });
@@ -2333,7 +2675,7 @@ export class GameScene3D {
   updateOverlays() {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
-    const proj = new THREE.Vector3();
+    const proj = this._vProj;
 
     const fppPid = this.cameraMode === 'fpp' ? this.activePlayerId : null;
     this.pawns.forEach((mesh, pid) => {
@@ -2387,7 +2729,7 @@ export class GameScene3D {
     const t = this.clock.getElapsedTime();
 
     // Gelombang laut halus (hanya saat mode klasik terlihat)
-    if (this.classicGroup.visible) {
+    if (this.classicGroup.visible && this.oceanMesh) {
       const posAttr = this.oceanMesh.geometry.attributes.position;
       for (let i = 0; i < posAttr.count; i++) {
         const vx = posAttr.getX(i);
@@ -2410,17 +2752,19 @@ export class GameScene3D {
       floatGrp.rotation.y = t * 1.6 + floatGrp.userData.phase;
       floatGrp.position.y = floatGrp.userData.baseY + Math.sin(t * 2.8 + floatGrp.userData.phase) * 0.10;
     });
-    if (this.crownMesh) {
+    if (this.crownMesh && this.classicGroup.visible) {
       this.crownMesh.rotation.y = t * 1.2;
       this.crownMesh.position.y = 2.4 + Math.sin(t * 2.2) * 0.15;
     }
 
     // Kedip cahaya obor / api unggun saat malam
     if (this.theme === 'night') {
-      this.torchLights.forEach((light, i) => {
-        light.intensity = 2.6 + Math.sin(t * 11 + i * 2) * 0.45;
-      });
-      if (this.mountainLights.length > 0) {
+      if (this.classicGroup.visible) {
+        this.torchLights.forEach((light, i) => {
+          if (light.visible) light.intensity = 2.6 + Math.sin(t * 11 + i * 2) * 0.45;
+        });
+      }
+      if (this.mountainGroup.visible && this.mountainLights.length > 0 && this.mountainLights[0].visible) {
         this.mountainLights[0].intensity = 4.2 + Math.sin(t * 12) * 0.75;
       }
     }
@@ -2453,44 +2797,51 @@ export class GameScene3D {
       }
 
       const yaw = povPawn.rotation.y + this.fppYawOffset;
-      const fwd = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-      const right = new THREE.Vector3(-Math.cos(yaw), 0, Math.sin(yaw));
+      const fwd = this._vFwd.set(Math.sin(yaw), 0, Math.cos(yaw));
+      const right = this._vRight.set(-Math.cos(yaw), 0, Math.sin(yaw));
 
       if (this.cameraMode === 'tpp') {
-        const shoulderPivot = povPawn.position.clone().add(new THREE.Vector3(0, 1.32, 0));
-        const desiredPos = povPawn.position
-          .clone()
+        const desiredPos = this._vDesired
+          .copy(povPawn.position)
           .addScaledVector(fwd, -2.75)
           .addScaledVector(right, 0.32);
         desiredPos.y += 1.95 + this.fppPitchOffset * 1.4;
 
-        if (this.boardStyle === 'mountain' && this.tppColliders.length > 0) {
-          const camVec = desiredPos.clone().sub(shoulderPivot);
-          const camDist = camVec.length();
-          if (camDist > 0.1) {
-            this.tppRaycaster.set(shoulderPivot, camVec.clone().normalize());
-            this.tppRaycaster.far = camDist + 0.3;
-            const hits = this.tppRaycaster.intersectObjects(this.tppColliders, false);
-            if (hits.length > 0 && hits[0].distance < camDist) {
-              const safeDist = Math.max(1.1, hits[0].distance - 0.38);
-              desiredPos.copy(shoulderPivot).addScaledVector(camVec.normalize(), safeDist);
-              desiredPos.y += 0.28;
+        if (this.boardStyle === 'mountain') {
+          if (this.quality !== 'low' && this.tppColliders.length > 0) {
+            const shoulderPivot = this._vShoulder.copy(povPawn.position);
+            shoulderPivot.y += 1.32;
+            const camVec = this._vCamVec.copy(desiredPos).sub(shoulderPivot);
+            const camDist = camVec.length();
+            if (camDist > 0.1) {
+              this._tppFrame++;
+              const movedEnough = shoulderPivot.distanceToSquared(this._tppLastRayPos) > 0.0025;
+              if (this._tppFrame % 3 === 0 || movedEnough || this._tppCachedSafeDist === null) {
+                this._tppLastRayPos.copy(shoulderPivot);
+                this.tppRaycaster.set(shoulderPivot, camVec.divideScalar(camDist));
+                this.tppRaycaster.far = camDist + 0.3;
+                const hits = this.tppRaycaster.intersectObjects(this.tppColliders, false);
+                this._tppCachedSafeDist =
+                  hits.length > 0 && hits[0].distance < camDist
+                    ? Math.max(1.1, hits[0].distance - 0.38)
+                    : null;
+              } else {
+                camVec.divideScalar(camDist);
+              }
+              if (this._tppCachedSafeDist !== null && this._tppCachedSafeDist < camDist) {
+                desiredPos.copy(shoulderPivot).addScaledVector(camVec, this._tppCachedSafeDist);
+                desiredPos.y += 0.28;
+              }
             }
           }
 
-          const skyOrigin = new THREE.Vector3(desiredPos.x, desiredPos.y + 10, desiredPos.z);
-          this.tppRaycaster.set(skyOrigin, new THREE.Vector3(0, -1, 0));
-          this.tppRaycaster.far = 14;
-          const floorHits = this.tppRaycaster.intersectObjects(this.tppColliders, false);
-          if (floorHits.length > 0) {
-            const groundY = floorHits[0].point.y;
-            if (desiredPos.y < groundY + 0.55) {
-              desiredPos.y = groundY + 0.65;
-            }
+          const groundY = this.getApproxMountainGroundY(desiredPos.x, desiredPos.z);
+          if (desiredPos.y < groundY + 0.55) {
+            desiredPos.y = groundY + 0.65;
           }
         }
 
-        const lookTarget = povPawn.position.clone().addScaledVector(fwd, 2.8);
+        const lookTarget = this._vLookTarget.copy(povPawn.position).addScaledVector(fwd, 2.8);
         lookTarget.y += 1.15 - this.fppPitchOffset * 1.2 + this.climbOrSlidePitch * 0.9;
 
         this.camera.position.lerp(desiredPos, 0.14);
@@ -2500,7 +2851,7 @@ export class GameScene3D {
       } else {
         this.syncFppVisibility();
         const bob = povPawn.userData?.rig?.bodyGroup?.position?.y || 0;
-        const eyePos = povPawn.position.clone().addScaledVector(fwd, 0.2);
+        const eyePos = this._vDesired.copy(povPawn.position).addScaledVector(fwd, 0.2);
         eyePos.y += 1.28 + bob;
 
         const pitch = THREE.MathUtils.clamp(
@@ -2508,12 +2859,12 @@ export class GameScene3D {
           -0.75,
           0.85
         );
-        const lookDir = new THREE.Vector3(
+        const lookDir = this._vLookDir.set(
           Math.sin(yaw) * Math.cos(pitch),
           Math.sin(pitch),
           Math.cos(yaw) * Math.cos(pitch)
         );
-        const lookTarget = eyePos.clone().addScaledVector(lookDir, 4.0);
+        const lookTarget = this._vLookTarget.copy(eyePos).addScaledVector(lookDir, 4.0);
 
         this.camera.position.lerp(eyePos, 0.35);
         this.controls.target.lerp(lookTarget, 0.35);
@@ -2529,7 +2880,8 @@ export class GameScene3D {
           }
         } else if (this.autoFollow && this.activeFollowObj && now > this.cameraPresetLockUntil) {
           const focus = this.activeFollowObj.position;
-          this.desiredTarget.lerp(new THREE.Vector3(focus.x, focus.y + 0.8, focus.z), 0.12);
+          this._vFocus.set(focus.x, focus.y + 0.8, focus.z);
+          this.desiredTarget.lerp(this._vFocus, 0.12);
           this.controls.target.lerp(this.desiredTarget, 0.1);
         }
       }
@@ -2566,6 +2918,7 @@ export class GameScene3D {
       }
       this.wildernessLights.forEach((l) => {
         l.intensity = 0;
+        l.visible = false;
       });
       this.wildernessZoneFireflies.forEach(({ mat }) => {
         mat.opacity = 0;
@@ -2576,10 +2929,13 @@ export class GameScene3D {
     const target = inWilderness ? 1 : 0;
     this.wildernessBlend += (target - this.wildernessBlend) * 0.08;
     if (!inWilderness && this.wildernessBlend < 0.003) {
-      this.wildernessBlend = 0;
-      this.setTheme(this.theme);
+      if (this.wildernessBlend > 0) {
+        this.wildernessBlend = 0;
+        this.setTheme(this.theme);
+      }
       this.wildernessLights.forEach((l) => {
         l.intensity = 0;
+        l.visible = false;
       });
       this.wildernessZoneFireflies.forEach(({ mat }) => {
         mat.opacity = 0;
@@ -2589,14 +2945,14 @@ export class GameScene3D {
 
     const b = this.wildernessBlend;
     const isNight = this.theme === 'night';
-    const baseSky = new THREE.Color(isNight ? '#090f24' : '#74ccf4');
-    const baseFog = new THREE.Color(isNight ? '#0d1633' : '#8cd9fa');
-    const abyss = new THREE.Color('#040d12');
-    const baseHemiColor = new THREE.Color(isNight ? '#4c6ef5' : '#ffffff');
-    const tealTint = new THREE.Color('#2dd4bf');
+    const baseSky = this._cBaseSky.set(isNight ? '#090f24' : '#74ccf4');
+    const baseFog = this._cBaseFog.set(isNight ? '#0d1633' : '#8cd9fa');
+    const abyss = this._cAbyss;
+    const baseHemiColor = this._cBaseHemi.set(isNight ? '#4c6ef5' : '#ffffff');
+    const tealTint = this._cTealTint;
 
     if (b > 0.001) {
-      this.scene.background = baseSky.lerp(abyss, b);
+      this.scene.background.copy(baseSky).lerp(abyss, b);
       if (this.scene.fog) {
         this.scene.fog.color.copy(baseFog).lerp(abyss, b);
         this.scene.fog.density = THREE.MathUtils.lerp(isNight ? 0.011 : 0.0085, 0.034, b);
@@ -2611,7 +2967,9 @@ export class GameScene3D {
     }
 
     this.wildernessLights.forEach((l, idx) => {
-      l.intensity = idx === zoneIdx ? 2.8 * b : 0;
+      const active = inWilderness && idx === zoneIdx && b > 0.02;
+      l.intensity = active ? 2.8 * b : 0;
+      l.visible = active;
     });
 
     this.wildernessZoneFireflies.forEach((zoneFly, idx) => {

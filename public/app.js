@@ -31,6 +31,7 @@ const el = {
   btnJoinRoom: document.getElementById('btn-join-room'),
   btnHomeBoardStyle: document.getElementById('btn-home-board-style'),
   btnHomeTheme: document.getElementById('btn-home-theme'),
+  btnHomeQuality: document.getElementById('btn-home-quality'),
   btnHomeSound: document.getElementById('btn-home-sound'),
 
   btnLocalBack: document.getElementById('btn-local-back'),
@@ -63,6 +64,7 @@ const el = {
   btnCamTop: document.getElementById('btn-cam-top'),
   btnToggleAutofollow: document.getElementById('btn-toggle-autofollow'),
   btnHudTheme: document.getElementById('btn-hud-theme'),
+  btnHudQuality: document.getElementById('btn-hud-quality'),
   btnHudSound: document.getElementById('btn-hud-sound'),
   btnHudExit: document.getElementById('btn-hud-exit'),
   hudPlayers: document.getElementById('hud-players'),
@@ -90,8 +92,12 @@ const el = {
   btnVictoryHome: document.getElementById('btn-victory-home')
 };
 
-// Inisialisasi Scene 3D
-const scene3d = new GameScene3D(el.canvasContainer, el.pawnOverlays);
+// Inisialisasi Scene 3D & Preset Grafis Otomatis
+const savedQuality = typeof localStorage !== 'undefined' ? localStorage.getItem('step100_quality') : null;
+const initialQuality = ['high', 'medium', 'low'].includes(savedQuality)
+  ? savedQuality
+  : GameScene3D.detectRecommendedQuality();
+const scene3d = new GameScene3D(el.canvasContainer, el.pawnOverlays, { quality: initialQuality });
 
 // State Aplikasi
 const state = {
@@ -99,6 +105,7 @@ const state = {
   boardStyle: 'mountain', // 'mountain' | 'classic'
   cameraMode: 'overview', // 'overview' | 'tpp' | 'fpp' | 'top'
   theme: 'day',
+  quality: initialQuality,
   soundOn: true,
   autoFollow: true,
 
@@ -157,6 +164,38 @@ function addLog(text) {
     el.hudLogList.removeChild(el.hudLogList.lastChild);
   }
 }
+
+const QUALITY_LABELS = {
+  high: { home: '✨ Grafis: Tinggi', hud: '✨ Tinggi' },
+  medium: { home: '⚡ Grafis: Sedang', hud: '⚡ Sedang' },
+  low: { home: '🍃 Grafis: Ringan', hud: '🍃 Ringan' }
+};
+
+function applyQualityUI(level, persist = true) {
+  const q = ['high', 'medium', 'low'].includes(level) ? level : 'high';
+  state.quality = q;
+  scene3d.setQuality(q);
+  document.body.classList.remove('gfx-high', 'gfx-medium', 'gfx-low');
+  document.body.classList.add(`gfx-${q}`);
+  const lbl = QUALITY_LABELS[q];
+  if (el.btnHomeQuality) el.btnHomeQuality.textContent = lbl.home;
+  if (el.btnHudQuality) el.btnHudQuality.textContent = lbl.hud;
+  if (persist && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem('step100_quality', q);
+    } catch (_) {}
+  }
+}
+
+function cycleQuality() {
+  const order = ['high', 'medium', 'low'];
+  const next = order[(order.indexOf(state.quality) + 1) % order.length];
+  applyQualityUI(next, true);
+  const label = next === 'high' ? 'Tinggi (Visual Penuh)' : next === 'medium' ? 'Sedang (Seimbang)' : 'Ringan (Hemat RAM & Baterai)';
+  showBanner(`⚙️ Mode Grafis: ${label}`, 1800);
+}
+
+applyQualityUI(state.quality, false);
 
 function toggleTheme() {
   state.theme = state.theme === 'day' ? 'night' : 'day';
@@ -219,6 +258,8 @@ el.btnHomeBoardStyle.addEventListener('click', toggleBoardStyle);
 el.btnHudBoardStyle.addEventListener('click', toggleBoardStyle);
 el.btnHomeTheme.addEventListener('click', toggleTheme);
 el.btnHudTheme.addEventListener('click', toggleTheme);
+el.btnHomeQuality?.addEventListener('click', cycleQuality);
+el.btnHudQuality?.addEventListener('click', cycleQuality);
 el.btnHomeSound.addEventListener('click', toggleSound);
 el.btnHudSound.addEventListener('click', toggleSound);
 el.btnToggleAutofollow.addEventListener('click', toggleAutoFollow);
